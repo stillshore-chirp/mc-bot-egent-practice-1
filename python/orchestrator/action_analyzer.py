@@ -18,6 +18,9 @@ from runtime.rules import (
 
 ArgumentsType = Union[PlanArguments, Dict[str, object], None]
 MOVE_TO_PLAYER_HINTS = (
+    "ここ",
+    "come here",
+    "come to me",
     "プレイヤー",
     "あなた",
     "きみ",
@@ -33,6 +36,60 @@ MOVE_TO_PLAYER_HINTS = (
     "ついて",
     "合流",
 )
+
+# LLM の計画生成を待たずに、話者への呼び寄せとして扱える明確な表現。
+# 曖昧な「移動して」などは従来どおり planner と後段の分類へ委ねる。
+MOVE_TO_PLAYER_COMMANDS = (
+    "ここに来て",
+    "ここへ来て",
+    "こっちに来て",
+    "こっち来て",
+    "こちらに来て",
+    "こちらへ来て",
+    "ここに来い",
+    "ここへ来い",
+    "こっちに来い",
+    "こっち来い",
+    "come here",
+    "come to me",
+)
+MOVE_TO_PLAYER_NEGATIONS = (
+    "ここに来ないで",
+    "ここに来るな",
+    "こっちに来ないで",
+    "こっちに来るな",
+    "ここに来てほしくない",
+    "こっちに来てほしくない",
+    "来てほしくない",
+    "来てはいけない",
+    "don't come here",
+    "do not come here",
+)
+
+
+def is_move_to_player_command(text: str) -> bool:
+    """明確な呼び寄せ表現を deterministic に判定する。
+
+    実行対象はチャット送信者であり、座標不足を理由に planner が確認へ
+    遷移するとユーザーの意図を失うため、明確な表現だけ入口で固定する。
+    """
+
+    raw_text = str(text or "")
+    compact = "".join(raw_text.lower().split())
+    # 別プレイヤーへの伝言・引用を話者本人への指示として実行しない。
+    # 明確な直接呼びかけだけを入口で固定し、伝言は従来のplannerへ委ねる。
+    relay_markers = ("tell ", "ask ", "message ", "伝えて", "伝えます", "と言って", "と言い")
+    if any(marker in raw_text.lower() for marker in relay_markers):
+        return False
+    if any(
+        "".join(phrase.lower().split()) in compact
+        for phrase in MOVE_TO_PLAYER_NEGATIONS
+    ):
+        return False
+    return any(
+        "".join(command.lower().split()) in compact
+        for command in MOVE_TO_PLAYER_COMMANDS
+    )
 
 
 @dataclass
@@ -174,7 +231,10 @@ class ActionAnalyzer:
 
         compact_segments = tuple(segment.replace(" ", "").replace("　", "").lower() for segment in segments)
         for segment in compact_segments:
-            if any(hint.lower() in segment for hint in MOVE_TO_PLAYER_HINTS):
+            if any(
+                hint.replace(" ", "").replace("　", "").lower() in segment
+                for hint in MOVE_TO_PLAYER_HINTS
+            ):
                 return True
         return False
 
@@ -200,4 +260,4 @@ class ActionAnalyzer:
         return matches
 
 
-__all__ = ["ActionAnalyzer"]
+__all__ = ["ActionAnalyzer", "is_move_to_player_command"]

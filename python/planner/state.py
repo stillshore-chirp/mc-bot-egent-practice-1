@@ -33,6 +33,7 @@ class UnifiedPlanState(TypedDict, total=False):
     step: str
     last_target_coords: Optional[Tuple[int, int, int]]
     explicit_coords: Optional[Tuple[int, int, int]]
+    target_player: Optional[str]
     backlog: List[Dict[str, str]]
     next_action: str
     confirmation_required: bool

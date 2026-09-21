@@ -60,6 +60,7 @@ class FollowOrchestrator(DummyOrchestrator):
         self.memory = MemoryStub({"last_requester": "targetUser"})
         self.follow_calls = []
         self.say_messages = []
+        self.follow_response: Dict[str, Any] = {"ok": True}
 
         class _Actions:
             def __init__(self, outer: "FollowOrchestrator") -> None:
@@ -67,7 +68,7 @@ class FollowOrchestrator(DummyOrchestrator):
 
             async def follow_player(self, target_name: str) -> Dict[str, Any]:
                 self._outer.follow_calls.append(target_name)
-                return {"ok": True}
+                return self._outer.follow_response
 
             async def say(self, message: str) -> Dict[str, Any]:
                 self._outer.say_messages.append(message)
@@ -175,3 +176,87 @@ def test_handle_move_follows_last_requester_when_state_missing_target():
     assert result == {"handled": True, "updated_target": (0, 64, 0), "failure_detail": None}
     assert orchestrator.follow_calls == ["targetUser"]
     assert orchestrator._move_requests == tuple()
+    assert orchestrator.say_messages == ["targetUser さんに合流しました。"]
+    assert "X=" not in orchestrator.say_messages[0]
+
+
+def test_handle_move_maps_rendezvous_error_without_exposing_raw_details():
+    orchestrator = FollowOrchestrator()
+    orchestrator.follow_response = {
+        "ok": False,
+        "error": "rendezvous_no_path",
+        "detail": "raw path and coordinates must not be shown",
+    }
+    state: Dict[str, Any] = {
+        "step": "ここに来て",
+        "category": "move_to_player",
+        "explicit_coords": None,
+        "last_target_coords": None,
+        "backlog": [],
+        "role_transitioned": False,
+        "perception_history": [],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result["handled"] is False
+    assert result["failure_detail"] == (
+        "対象まで安全な経路を見つけられませんでした。対象の近くで再度呼びかけてください。"
+    )
+    assert orchestrator.say_messages == [result["failure_detail"]]
+    assert "raw" not in orchestrator.say_messages[0]
+    assert "coordinates" not in orchestrator.say_messages[0]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_message"),
+    (
+        (
+            "rendezvous_target_offline",
+            "対象プレイヤーが現在オンラインでないため、合流できません。対象が参加してから、もう一度呼びかけてください。",
+        ),
+        (
+            "rendezvous_position_service_unavailable",
+            "対象プレイヤーの位置情報を取得できないため、安全な移動を開始できません。しばらく待ってから、もう一度呼びかけてください。",
+        ),
+        (
+            "rendezvous_observation_unavailable",
+            "周辺の安全情報を取得できないため、安全を確認できず移動を停止しました。しばらく待ってから、もう一度呼びかけてください。",
+        ),
+        (
+            "rendezvous_line_of_sight_unsupported",
+            "対象の視線確認を利用できないため、今回は移動を開始しません。Bot設定を確認してから、もう一度呼びかけてください。",
+        ),
+        (
+            "rendezvous_distance_limit",
+            "対象までの距離が安全な上限を超えているため、合流を完了できませんでした。対象の近くで再度呼びかけてください。",
+        ),
+    ),
+)
+def test_handle_move_maps_each_rendezvous_service_error(
+    error_code: str, expected_message: str
+) -> None:
+    """Node固定enumを、原因に応じた安全な回復案へ変換する。"""
+
+    orchestrator = FollowOrchestrator()
+    orchestrator.follow_response = {
+        "ok": False,
+        "error": error_code,
+        "detail": "internal service detail must stay private",
+    }
+    state: Dict[str, Any] = {
+        "step": "ここに来て",
+        "category": "move_to_player",
+        "explicit_coords": None,
+        "last_target_coords": None,
+        "backlog": [],
+        "role_transitioned": False,
+        "perception_history": [],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result["handled"] is False
+    assert result["failure_detail"] == expected_message
+    assert orchestrator.say_messages == [expected_message]
+    assert "internal" not in expected_message

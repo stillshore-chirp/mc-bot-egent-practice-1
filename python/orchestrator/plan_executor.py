@@ -121,6 +121,7 @@ class PlanExecutor:
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
+        execution_failure_reason: Optional[str] = None
         detection_reports: List[Dict[str, Any]] = []
         react_trace: List[ReActStep] = list(plan_out.react_trace)
         directives: List[Any] = list(getattr(plan_out, "directives", []) or [])
@@ -169,6 +170,13 @@ class PlanExecutor:
             event_level = result.event_level
             log_level = result.log_level
 
+            if status == "failed" and execution_failure_reason is None:
+                execution_failure_reason = (
+                    result.failure_reason
+                    or observation_text
+                    or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。"
+                )
+
             if result.detection_report:
                 detection_reports.append(result.detection_report)
 
@@ -190,6 +198,11 @@ class PlanExecutor:
                     log_level=log_level,
                 )
 
+            if result.terminal_failure:
+                # 合流失敗は結果通知を送った時点で安全に停止する。
+                # RecoveryCoordinatorへ渡さず、後続ステップも実行しない。
+                break
+
             if result.should_halt:
                 await self.recovery.handle_failure(
                     failed_step=normalized,
@@ -203,26 +216,30 @@ class PlanExecutor:
                 )
                 return
 
-        if detection_reports:
+        if not execution_failure_reason and detection_reports:
             await self.task_router.handle_detection_reports(
                 detection_reports,
                 already_responded=bool(plan_out.resp.strip()),
             )
 
-        if action_backlog:
+        if not execution_failure_reason and action_backlog:
             await self.task_router.handle_action_backlog(
                 action_backlog,
                 already_responded=bool(plan_out.resp.strip()),
             )
 
-        # 計画が最後まで完了した場合は pending 状態の反省ログへ成功結果を書き戻す。
+        # recovery/replanを抑止した失敗も、pending reflection では成功扱いにしない。
+        reflection_outcome = "failed" if execution_failure_reason else "success"
+        reflection_detail = execution_failure_reason or "計画ステップを完了"
         completed_reflection = self.memory.finalize_pending_reflection(
-            outcome="success",
-            detail="計画ステップを完了",
+            outcome=reflection_outcome,
+            detail=reflection_detail,
         )
         if completed_reflection:
             self.logger.info(
-                "reflection session marked as success id=%s", completed_reflection.id
+                "reflection session marked as %s id=%s",
+                reflection_outcome,
+                completed_reflection.id,
             )
 
     def _emit_react_log(

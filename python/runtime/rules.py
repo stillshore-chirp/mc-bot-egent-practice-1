@@ -55,6 +55,13 @@ ACTION_TASK_RULES: Dict[str, ActionTaskRule] = {
     ),
     "move_to_player": ActionTaskRule(
         keywords=(
+            "ここに来て",
+            "ここへ来て",
+            "こっちに来て",
+            "こっち来て",
+            "こちらに来て",
+            "come here",
+            "comehere",
             "移動",
             "向かう",
             "歩く",

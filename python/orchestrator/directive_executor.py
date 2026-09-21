@@ -43,6 +43,7 @@ class DirectiveResult:
     last_target_coords: Optional[Tuple[int, int, int]] = None
     failure_reason: Optional[str] = None
     should_halt: bool = False
+    terminal_failure: bool = False
     emit_log: bool = True
 
 
@@ -168,6 +169,7 @@ class DirectiveExecutor:
                 last_target_coords=action_step_result.last_target_coords,
                 failure_reason=action_step_result.failure_reason,
                 should_halt=action_step_result.should_halt,
+                terminal_failure=action_step_result.terminal_failure,
                 emit_log=action_step_result.emit_log,
             )
 
@@ -464,4 +466,3 @@ class DirectiveExecutor:
             event_level="fault",
             log_level=logging.WARNING,
         )
-
