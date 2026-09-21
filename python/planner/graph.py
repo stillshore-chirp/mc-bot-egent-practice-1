@@ -24,9 +24,13 @@ from .models import (
     GoalProfile,
     PlanArguments,
     PlanOut,
+    PlanOutWire,
+    PlanOutWireConversionError,
     PreActionReview,
     ReActStep,
     normalize_directives,
+    parse_plan_out_wire,
+    wire_to_plan_out,
 )
 from .priority import PlanPriorityManager
 from .prompts import (
@@ -149,6 +153,12 @@ def _normalize_plan_json(content: str) -> str:
 def _classify_plan_parse_error(exc: Exception, *, used_structured_output: bool) -> str:
     """Plan parse 失敗を分類し、可観測性向けの安定コードへ変換する。"""
 
+    if isinstance(exc, PlanOutWireConversionError):
+        return (
+            "structured_output_carrier_validation_failed"
+            if used_structured_output
+            else "plan_json_carrier_validation_failed"
+        )
     if isinstance(exc, ValidationError):
         try:
             error_types = {str(item.get("type", "")) for item in exc.errors()}
@@ -199,6 +209,35 @@ def _should_use_legacy_normalize(raw_content: str, exc: Exception) -> bool:
         if str(loc[0]) not in allowed_legacy_roots:
             return False
     return True
+
+
+def _parse_plan_dict(payload: Dict[str, Any], *, allow_legacy: bool) -> PlanOut:
+    """strict wire を検証し、raw legacy JSON の場合だけ runtime model を許可する。"""
+
+    try:
+        return parse_plan_out_wire(payload)
+    except ValidationError as wire_exc:
+        if not allow_legacy:
+            raise
+        # sparse legacy JSON、従来の object notes/args/backlog は runtime model
+        # で受け入れ、wire の carrier 変換エラーだけは上へ伝播させる。
+        try:
+            return PlanOut.model_validate(payload)
+        except Exception as runtime_exc:
+            raise runtime_exc from wire_exc
+
+
+def _parse_plan_json(raw_content: str) -> PlanOut:
+    """JSON text を strict wire または legacy runtime model へ変換する。"""
+
+    try:
+        payload = json.loads(raw_content)
+    except Exception:
+        return PlanOut.model_validate_json(raw_content)
+    if isinstance(payload, dict):
+        return _parse_plan_dict(payload, allow_legacy=True)
+    return PlanOut.model_validate_json(raw_content)
+
 
 def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
     hints: List[str] = []
@@ -455,15 +494,15 @@ def build_plan_graph(
         raw_content = state.get("content") or ""
         try:
             if structured_output is not None:
-                plan_data = PlanOut.model_validate(structured_output)
+                plan_data = _parse_plan_dict(structured_output, allow_legacy=False)
             else:
-                plan_data = PlanOut.model_validate_json(raw_content)
+                plan_data = _parse_plan_json(raw_content)
         except Exception as primary_exc:
             if structured_output is None:
                 if _should_use_legacy_normalize(raw_content, primary_exc):
                     normalized_content = _normalize_plan_json(raw_content)
                     try:
-                        plan_data = PlanOut.model_validate_json(normalized_content)
+                        plan_data = _parse_plan_json(normalized_content)
                         logger.warning(
                             "plan graph used legacy JSON normalize fallback: %s",
                             primary_exc.__class__.__name__,
@@ -791,6 +830,8 @@ __all__ = [
     "GoalProfile",
     "PlanArguments",
     "PlanOut",
+    "PlanOutWire",
+    "PlanOutWireConversionError",
     "PreActionReview",
     "PlanPriorityManager",
     "ReActStep",
@@ -810,4 +851,6 @@ __all__ = [
     "extract_output_text",
     "extract_refusal_text",
     "extract_structured_output",
+    "parse_plan_out_wire",
+    "wire_to_plan_out",
 ]

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from llm.client import (
     AsyncOpenAI,
     call_responses_api,
+    create_async_openai_client,
     log_response_outcome,
 )
 from .graph import (
@@ -27,6 +28,8 @@ from .graph import (
     BarrierNotificationTimeout,
     PlanArguments,
     PlanOut,
+    PlanOutWire,
+    PlanOutWireConversionError,
     PreActionReview,
     PlanPriorityManager,
     UnifiedPlanState,
@@ -39,6 +42,8 @@ from .graph import (
     _extract_output_text,
     extract_refusal_text,
     extract_structured_output,
+    parse_plan_out_wire,
+    wire_to_plan_out,
 )
 from planner_config import PlannerConfig, load_planner_config
 from utils import setup_logger
@@ -47,18 +52,28 @@ logger = setup_logger("planner")
 
 _PLANNER_CONFIG = load_planner_config()
 _PRIORITY_MANAGER = PlanPriorityManager(_PLANNER_CONFIG)
+_ORIGINAL_ASYNC_OPENAI = AsyncOpenAI
 
 
 def _default_async_client_factory() -> AsyncOpenAI:
     """AsyncOpenAI の生成を共通化し、テスト時はモックへ差し替えやすくする。"""
 
+    # 既存テストは `planner.AsyncOpenAI` または共有 openai module の
+    # `AsyncOpenAI` を差し替える。通常時は共通factoryにSDKの解決を任せ、
+    # planner側のエイリアスだけが差し替えられた場合だけ明示注入する。
+    client_class = (
+        AsyncOpenAI if AsyncOpenAI is not _ORIGINAL_ASYNC_OPENAI else None
+    )
     try:
-        if _PLANNER_CONFIG.api_key or _PLANNER_CONFIG.base_url:
-            return openai.AsyncOpenAI(api_key=_PLANNER_CONFIG.api_key, base_url=_PLANNER_CONFIG.base_url)
-        return openai.AsyncOpenAI()
+        if client_class is None:
+            return create_async_openai_client(_PLANNER_CONFIG)
+        return create_async_openai_client(
+            _PLANNER_CONFIG,
+            client_class=client_class,
+        )
     except TypeError:
-        # pytest のモックで引数を受け付けない場合にも備える。
-        return openai.AsyncOpenAI()
+        # 引数を受け付けない既存テストダブルとの互換性を維持する。
+        return (client_class or openai.AsyncOpenAI)()
 
 
 _ASYNC_CLIENT_FACTORY = _default_async_client_factory
@@ -78,10 +93,11 @@ def _build_responses_payload(
     if schema_model is None:
         text_format: Dict[str, Any] = {"type": "json_object"}
     else:
+        effective_schema_model = PlanOutWire if schema_model is PlanOut else schema_model
         text_format = {
             "type": "json_schema",
             "name": schema_name or schema_model.__name__,
-            "schema": to_strict_json_schema(schema_model),
+            "schema": to_strict_json_schema(effective_schema_model),
             "strict": True,
         }
 
@@ -108,7 +124,7 @@ def _get_plan_graph() -> CompiledStateGraph:
                 system,
                 user,
                 _PLANNER_CONFIG,
-                schema_model=PlanOut,
+                schema_model=PlanOutWire,
                 schema_name="plan_out",
             ),
             review_payload_builder=lambda system, user: _build_responses_payload(
@@ -272,10 +288,14 @@ __all__ = [
     "openai",
     "PlanArguments",
     "PlanOut",
+    "PlanOutWire",
+    "PlanOutWireConversionError",
+    "parse_plan_out_wire",
     "ReActStep",
     "get_plan_priority",
     "reset_plan_priority",
     "compose_barrier_notification",
     "record_structured_step",
     "record_recovery_hints",
+    "wire_to_plan_out",
 ]

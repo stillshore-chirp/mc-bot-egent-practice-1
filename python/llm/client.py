@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from time import monotonic
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Callable, Dict, Literal, Tuple
 
 import openai
 
@@ -11,6 +11,8 @@ from planner_config import PlannerConfig
 from utils import log_structured_event, setup_logger
 
 logger = setup_logger("llm.client")
+
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 # pytest でのモック差し替え互換を維持するため、旧インポートと同名のエイリアスを提供する。
 AsyncOpenAI = openai.AsyncOpenAI
@@ -31,16 +33,36 @@ ResponseCallOutcome = Literal[
 ]
 
 
-def create_openai_client(config: PlannerConfig) -> OpenAI:
+def _client_kwargs(config: PlannerConfig) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    if config.api_key is not None:
+        kwargs["api_key"] = config.api_key
+    # Compose の env_file が空文字の OPENAI_BASE_URL を環境へ残しても、
+    # SDK がその空文字を再読しないよう公式既定値を明示する。
+    kwargs["base_url"] = config.base_url or DEFAULT_OPENAI_BASE_URL
+    return kwargs
+
+
+def create_openai_client(
+    config: PlannerConfig,
+    *,
+    client_class: Callable[..., OpenAI] | None = None,
+) -> OpenAI:
     """同期 OpenAI クライアントを設定付きで初期化する。"""
 
-    return OpenAI(api_key=config.api_key, base_url=config.base_url)
+    constructor = client_class or openai.OpenAI
+    return constructor(**_client_kwargs(config))
 
 
-def create_async_openai_client(config: PlannerConfig) -> AsyncOpenAI:
+def create_async_openai_client(
+    config: PlannerConfig,
+    *,
+    client_class: Callable[..., AsyncOpenAI] | None = None,
+) -> AsyncOpenAI:
     """非同期 OpenAI クライアントを設定付きで初期化する。"""
 
-    return AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+    constructor = client_class or openai.AsyncOpenAI
+    return constructor(**_client_kwargs(config))
 
 
 def _get_value(source: Any, key: str, default: Any = None) -> Any:
