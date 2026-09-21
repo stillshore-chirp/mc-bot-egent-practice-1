@@ -7,7 +7,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"import('./dist/runtime/config.js')\"",
     "start": "npm run build && node dist/bot.js",
     "dev": "tsx watch bot.ts",
     "test": "vitest run"

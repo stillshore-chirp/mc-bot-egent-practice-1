@@ -1,7 +1,7 @@
 // 日本語コメント：Mineflayer 実行時の環境変数から一貫した設定オブジェクトを生成する
 // 役割：bot.ts の肥大化を防ぎ、テストで個別条件を検証しやすくする
 import minecraftData from 'minecraft-data';
-import { supportedVersions as supportedProtocolVersions } from 'minecraft-protocol';
+import minecraftProtocol from 'minecraft-protocol';
 
 import {
   AgentWebSocketResolution,
@@ -40,7 +40,7 @@ const defaultDependencies: ConfigDependencies = {
 
 // Mineflayer と Paper サーバーの互換性を保つための既定バージョン。
 const DEFAULT_MC_VERSION = '1.21.11';
-const PROTOCOL_VERSIONS = new Set(supportedProtocolVersions);
+const PROTOCOL_VERSIONS = new Set(minecraftProtocol.supportedVersions);
 const SUPPORTED_MINECRAFT_VERSIONS = new Set(
   minecraftData.versions.pc
     .map((version) => version.minecraftVersion)
