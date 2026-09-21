@@ -65,6 +65,10 @@ interface RendezvousBotFixture {
   };
   goto: ReturnType<typeof vi.fn>;
   setGoal: ReturnType<typeof vi.fn>;
+  stop: ReturnType<typeof vi.fn>;
+  clearControlStates: ReturnType<typeof vi.fn>;
+  stopDigging: ReturnType<typeof vi.fn>;
+  quit: ReturnType<typeof vi.fn>;
   setMovements: ReturnType<typeof vi.fn>;
   blocks: { targetLiquid: boolean; currentLiquid: boolean; voidBelow: boolean };
 }
@@ -80,6 +84,10 @@ function createRendezvousBotFixture(): RendezvousBotFixture {
   };
   const blocks = { targetLiquid: false, currentLiquid: false, voidBelow: false };
   const setGoal = vi.fn();
+  const stop = vi.fn();
+  const clearControlStates = vi.fn();
+  const stopDigging = vi.fn();
+  const quit = vi.fn();
   const setMovements = vi.fn();
   const goto = vi.fn(async () => {
     botEntity.position = { ...targetEntity.position };
@@ -106,19 +114,37 @@ function createRendezvousBotFixture(): RendezvousBotFixture {
     players: { player: { username: 'player', entity: targetEntity } },
     entities: { target: targetEntity },
     blockAt,
+    clearControlStates,
+    stopDigging,
+    quit,
     pathfinder: {
       goto,
       setGoal,
+      stop,
       setMovements,
       movements: cautiousMovements,
     },
   } as unknown as Bot;
-  return { bot, botEntity, targetEntity, goto, setGoal, setMovements, blocks };
+  return {
+    bot,
+    botEntity,
+    targetEntity,
+    goto,
+    setGoal,
+    stop,
+    clearControlStates,
+    stopDigging,
+    quit,
+    setMovements,
+    blocks,
+  };
 }
 
 function createRendezvousController(
   options: {
     timeoutMs?: number;
+    deadlineMs?: number;
+    cancelGraceMs?: number;
     maxRetries?: number;
     playerPositionBridge?: Pick<PlayerPositionBridgeClient, 'lookup'>;
   } = {},
@@ -129,6 +155,8 @@ function createRendezvousController(
     forcedMoveMaxRetries: 0,
     forcedMoveRetryDelayMs: 0,
     rendezvousTimeoutMs: options.timeoutMs ?? 100,
+    rendezvousDeadlineMs: options.deadlineMs ?? 180_000,
+    rendezvousCancelGraceMs: options.cancelGraceMs ?? 25,
     rendezvousMaxRetries: options.maxRetries ?? 1,
     playerPositionBridge: options.playerPositionBridge,
     pathfinder: {
@@ -193,6 +221,57 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(response).toEqual({ ok: true });
     expect(fixture.goto).toHaveBeenCalledTimes(1);
     expect(fixture.setGoal).not.toHaveBeenCalledWith(null);
+  });
+
+  it('合流中の同一BotへのmoveToはnavigation_busyで拒否する', async () => {
+    const controller = createRendezvousController({ maxRetries: 0 });
+    const fixture = createRendezvousBotFixture();
+    let resolveGoto!: () => void;
+    fixture.goto.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveGoto = resolve;
+    }));
+
+    const followPromise = controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const moveResponse = await controller.handleMoveToCommand(
+      { x: 8, y: 64, z: 0 },
+      { getActiveBot: () => fixture.bot },
+    );
+    expect(moveResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.NAVIGATION_BUSY });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+
+    fixture.botEntity.position = { x: 2, y: 64, z: 0 };
+    resolveGoto();
+    await expect(followPromise).resolves.toEqual({ ok: true });
+  });
+
+  it('moveTo中の同一Botへの合流はrendezvous_busyで拒否する', async () => {
+    const controller = createRendezvousController({ maxRetries: 0 });
+    const fixture = createRendezvousBotFixture();
+    let resolveGoto!: () => void;
+    fixture.goto.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveGoto = resolve;
+    }));
+
+    const movePromise = controller.handleMoveToCommand(
+      { x: 8, y: 64, z: 0 },
+      { getActiveBot: () => fixture.bot },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const followResponse = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    expect(followResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+
+    resolveGoto();
+    await expect(movePromise).resolves.toEqual({ ok: true });
   });
 
   it('不正なtargetはBot参照前に拒否し、target文字列をエラーへ含めない', async () => {
@@ -437,6 +516,169 @@ describe('NavigationController handleFollowPlayerCommand', () => {
 
     expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
     expect(fixture.setGoal).toHaveBeenCalledWith(null);
+    expect(fixture.stop).toHaveBeenCalledTimes(1);
+    expect(fixture.clearControlStates).toHaveBeenCalledTimes(1);
+    expect(fixture.stopDigging).toHaveBeenCalledTimes(1);
     expect(fixture.goto).toHaveBeenCalledTimes(1);
+
+    const secondResponse = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    expect(secondResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY });
+  });
+
+  it('合流全体のdeadlineは区間timeoutを残時間へ切り詰め、新しい区間を開始しない', async () => {
+    const controller = createRendezvousController({
+      timeoutMs: 100,
+      deadlineMs: 5,
+      cancelGraceMs: 5,
+      maxRetries: 0,
+    });
+    const fixture = createRendezvousBotFixture();
+    fixture.goto.mockImplementation(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, 20);
+    }));
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    expect(fixture.setGoal).toHaveBeenCalledWith(null);
+  });
+
+  it('Bridge照会がdeadlineを越えた場合はtimeoutを返し、移動を開始しない', async () => {
+    const fixture = createRendezvousBotFixture();
+    (fixture.bot as unknown as { players: Record<string, unknown> }).players = {};
+    const lookup = vi.fn(() => new Promise<{
+      position: { x: number; y: number; z: number };
+      dimension: string;
+      observedAt: number;
+    }>((resolve) => {
+      setTimeout(() => resolve({
+        position: { x: 4, y: 64, z: 0 },
+        dimension: 'overworld',
+        observedAt: Date.now(),
+      }), 20);
+    }));
+    const controller = createRendezvousController({
+      timeoutMs: 100,
+      deadlineMs: 5,
+      maxRetries: 0,
+      playerPositionBridge: { lookup },
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(fixture.goto).not.toHaveBeenCalled();
+  });
+
+  it('timeout後の遅延gotoはsettleを待ってから返答し、返答後の移動を残さない', async () => {
+    const controller = createRendezvousController({ timeoutMs: 1, cancelGraceMs: 40, maxRetries: 0 });
+    const fixture = createRendezvousBotFixture();
+    fixture.goto.mockImplementation(() => new Promise<void>((resolve) => {
+      setTimeout(() => {
+        fixture.botEntity.position = { x: 2, y: 64, z: 0 };
+        resolve();
+      }, 10);
+    }));
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    const positionAtResponse = { ...fixture.botEntity.position };
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(positionAtResponse).toEqual({ x: 2, y: 64, z: 0 });
+    expect(fixture.botEntity.position).toEqual(positionAtResponse);
+    expect(fixture.setGoal).toHaveBeenCalledWith(null);
+  });
+
+  it('grace後もgotoが非協調ならBotを切断し、返答後の移動を残さない', async () => {
+    const controller = createRendezvousController({ timeoutMs: 1, cancelGraceMs: 5, maxRetries: 0 });
+    const fixture = createRendezvousBotFixture();
+    let disconnected = false;
+    fixture.quit.mockImplementation(() => {
+      disconnected = true;
+    });
+    fixture.goto.mockImplementation(() => new Promise<void>((resolve) => {
+      setTimeout(() => {
+        if (!disconnected) {
+          fixture.botEntity.position = { x: 2, y: 64, z: 0 };
+        }
+        resolve();
+      }, 30);
+    }));
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    const positionAtResponse = { ...fixture.botEntity.position };
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(fixture.quit).toHaveBeenCalledTimes(1);
+    expect(fixture.botEntity.position).toEqual(positionAtResponse);
+  });
+
+  it('再接続した新しいBotは旧Botの未解消cleanup lockから分離する', async () => {
+    const controller = createRendezvousController({ timeoutMs: 1, cancelGraceMs: 5, maxRetries: 0 });
+    const oldFixture = createRendezvousBotFixture();
+    oldFixture.goto.mockImplementation(() => new Promise<void>(() => undefined));
+
+    const oldResponse = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => oldFixture.bot },
+    );
+    expect(oldResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(oldFixture.quit).toHaveBeenCalledTimes(1);
+
+    const newFixture = createRendezvousBotFixture();
+    const newResponse = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => newFixture.bot },
+    );
+
+    expect(newResponse).toEqual({ ok: true });
+    expect(newFixture.goto).toHaveBeenCalledTimes(1);
+  });
+
+  it('同じControllerの合流gotoを並行実行せずbusyを返す', async () => {
+    const controller = createRendezvousController({ timeoutMs: 100, maxRetries: 0 });
+    const fixture = createRendezvousBotFixture();
+    let resolveGoto!: () => void;
+    fixture.goto.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveGoto = () => {
+        fixture.botEntity.position = { x: 2, y: 64, z: 0 };
+        resolve();
+      };
+    }));
+
+    const firstResponsePromise = controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const secondResponse = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+    expect(secondResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+
+    resolveGoto();
+    await expect(firstResponsePromise).resolves.toEqual({ ok: true });
   });
 });
