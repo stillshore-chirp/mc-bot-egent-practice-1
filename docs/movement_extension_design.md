@@ -4,13 +4,15 @@
 
 ## 現状と目標の境界
 
-製品目標像の正本は [`docs/product_vision.md`](product_vision.md) です。`move_to_player` は Python 側でチャット送信者（`last_requester`）を解決し、`follow_player` を優先する分岐を持ちます。今回の実装では、Node 側の `followPlayer` 受理・ディスパッチ、Mineflayer の完全一致 Entity 解決、Entity 未観測時の認証付き Paper AgentBridge `/v1/players/position` 位置照会、位置・ディメンション・観測時刻の検証、最大 16 区間×16 ブロック（約 256 ブロック）の有限 waypoint、区間ごとの位置再照会、安全エラー停止の経路が追加されています。Node の合流全体は既定 180 秒 deadline、Python の `followPlayer` 専用応答待機は 210 秒、worker の既定処理期限は 300 秒で、worker 期限が 240 秒未満なら 30 秒の余裕を確保できないため安全側に開始を拒否します。合流では掘削 fallback を使わず、上限超過は `rendezvous_distance_limit` で停止します。Java/Paper・Node・Python の対象テストは通過していますが、Paper/Minecraft を含む実ゲーム E2E は未実施です。
+製品目標像の正本は [`docs/product_vision.md`](product_vision.md) です。`move_to_player` は Python 側でチャット送信者（`last_requester`）を解決し、`follow_player` を優先する分岐を持ちます。今回の実装では、Node 側の `followPlayer` 受理・ディスパッチ、Mineflayer の完全一致 Entity 解決、Entity 未観測時の認証付き Paper AgentBridge `/v1/players/position` 位置照会、位置・ディメンション・観測時刻の検証、最大 16 区間×16 ブロック（約 256 ブロック）の有限 waypoint、区間ごとの位置再照会、安全エラー停止の経路が追加されています。Node の合流全体は既定 180 秒 deadline、Python の `followPlayer` 専用応答待機は 210 秒、worker の既定処理期限は 300 秒で、worker 期限が 240 秒未満なら 30 秒の余裕を確保できないため安全側に開始を拒否します。合流では掘削 fallback を使わず、上限超過は `rendezvous_distance_limit` で停止します。Java/Paper・Node・Python の対象テストは通過しています。実ゲームでは命令到達と床条件による安全停止、区間 timeout を観測しましたが、話者への合流成功は未確認です。
 
 「こっち来い」の目標契約では、チャットイベントの話者を同定し、近距離で観測できる Entity の座標を使います。遠距離など Entity がローカルに得られない場合は、認証付き Paper AgentBridge からゲームサーバーが保持する話者の位置スナップショットを取得します。移動は最大 16 区間×16 ブロック（約 256 ブロック）に区切り、各区間と到着直前に位置を再照会します。Node 全体の既定 deadline は 180 秒、Python の専用応答待機は 210 秒、worker の既定処理期限は 300 秒です。座標を視覚・聴覚から推測したものとして扱わず、取得時刻・ディメンション・危険状態を確認してから慎重な経路探索を行います。話者の消失、座標の陳腐化、ディメンション不一致、危険度上昇、歩行可能経路なし、上限超過、時間超過の場合は `rendezvous_*` の固定安全エラーで停止し、掘削や既定座標へ黙ってフォールバックしません。
 
-合流の中継地点は、同じ水平ブロック列で現在の高さと話者方向への最大一段の高さだけを候補にします。各候補の足元・胴・頭を観測し、足元の支持ブロック、空間、液体・水没・泡の柱、観測不能を判定します。空気は `air` / `cave_air` / `void_air` の完全なブロック名で識別し、`oak_stairs` などの階段を空気と誤認しないようにします。経路途中の全ブロック列や多段の地形をこの事前判定だけで保証するものではなく、経路探索後も区間ごとに再観測し、安全が確認できなければ停止します。実ゲームでの階段移動は未検証です。
+合流の中継地点は、同じ水平ブロック列で現在の高さと話者方向への最大一段の高さを候補にします。対象と現在位置の高さが同じで、基準候補の床が未対応なら、同じ水平列の一段上・一段下も厳密に検査します。各候補の足元・胴・頭を観測し、足元の支持ブロック、空間、液体・水没・泡の柱、観測不能を判定します。危険または観測不能な候補を通行可能として扱いません。空気は `air` / `cave_air` / `void_air` の完全なブロック名で識別し、`oak_stairs` などの階段を空気と誤認しないようにします。経路途中の全ブロック列や多段の地形をこの事前判定だけで保証するものではなく、経路探索後も区間ごとに再観測し、安全が確認できなければ停止します。実ゲームでの階段移動は未検証です。
 
 合流が `rendezvous_bot_unavailable` で停止した場合、Node は `RendezvousBotUnavailable` の固定診断を一度記録します。`phase` と `guard` で入口、実行開始、区間前、移動後、到着確認のどこで止まったかを区別し、`entityReady`、`positionReady`、`gotoStarted` は真偽値のみを残します。プレイヤー名、チャット本文、座標、raw entity、例外の内容を診断ログへ含めません。この診断は失敗箇所の特定用であり、Minecraft の接続状態や根本原因を単独で証明するものではありません。
+
+区間移動では `RendezvousNavigation` の固定イベントで `goto` 開始・settle、controller の期限・区間timer、pathfinder由来のtimeout、停止要求、有限grace後の切断要求を区別します。イベントには固定分類と真偽値のみを残し、対象名、座標、raw例外を記録しません。既定の区間timeout 30秒、合流全体のdeadline 180秒、再試行・安全停止の条件は変更しません。実ワールドでtimeout中にどこまで進んだか、経路全体に液体や保護領域があるかは、これらのイベントだけでは確定できません。
 
 実環境の事前確認で用いる `gatherStatus` については、Node の WebSocket 送信ログとspanのエラーメッセージを成功可否と固定分類だけに制限します。通信相手へ返すステータス内容は維持します。呼び出し側が返答全体を別途ログへ書く場合はこの制限が及ばないため、実環境の診断クライアントでも返答を表示・記録する前に要約します。
 
@@ -21,7 +23,7 @@
 - **行動ディスパッチ層**: `node-bot/bot.ts` の移動関連メソッドは、受け取った座標や経路設定をそのまま mineflayer へ委譲する薄いラッパーにとどめます。新規の移動コマンドを追加する場合も、バリデーションとロギングをラッパーで完結させ、mineflayer への依存はサービス層に閉じ込めてください。
 - **Python 側の計画生成**: `python/planner/graph.py` と `python/runtime/action_graph.py` では、移動ステップの生成と executor 選択（mineflayer / minedojo / chat）を分離しています。移動カテゴリを増やす場合は DSL の `ActionDirective` 拡張と合わせてグラフノードを調整し、Mineflayer に渡す前段で責務が分割されていることを確認してください。
 - **移動カテゴリの正規化**: `move_to_player` のような派生カテゴリも `runtime/rules.py` の `ACTION_TASK_RULES` に登録し、`route_module` で `move` モジュールへ正規化してから `handle_move` に渡します。未登録のカテゴリは backlog に落ちるため、追加時は必ずルールとルーティングをセットで更新してください。
-- **追従先の決定（現状 / 目標）**: Python 側では `move_to_player` がチャット送信者（`last_requester`）を追従対象として解決し、取得できない場合は障壁として報告します。Node 側には `followPlayer` 契約、Entity または認証付き Paper Bridge による座標再解決、最大 16 区間×16 ブロックの有界 waypoint、位置再照会、安全停止経路が追加されています。合流では掘削 fallback を使わず、上限超過は `rendezvous_distance_limit`、Node 全体の既定 180 秒 deadline 超過は `rendezvous_timeout` で停止します。Python の専用応答待機は 210 秒、worker の既定期限は 300 秒で、240 秒未満の worker 設定は `rendezvous_worker_timeout_mismatch` として開始を拒否します。Java/Paper・Node・Python の対象テストは通過していますが、実ゲーム E2E 未実施のため、話者への合流をどこからでも必ず到達する機能とは扱いません。
+- **追従先の決定（現状 / 目標）**: Python 側では `move_to_player` がチャット送信者（`last_requester`）を追従対象として解決し、取得できない場合は障壁として報告します。Node 側には `followPlayer` 契約、Entity または認証付き Paper Bridge による座標再解決、最大 16 区間×16 ブロックの有界 waypoint、位置再照会、安全停止経路が追加されています。合流では掘削 fallback を使わず、上限超過は `rendezvous_distance_limit`、Node 全体の既定 180 秒 deadline 超過は `rendezvous_timeout` で停止します。Python の専用応答待機は 210 秒、worker の既定期限は 300 秒で、240 秒未満の worker 設定は `rendezvous_worker_timeout_mismatch` として開始を拒否します。Java/Paper・Node・Python の対象テストは通過していますが、実ゲームでの合流成功は未確認のため、話者へ必ず到達する機能とは扱いません。
 
 ## 2. `forcedMove` リトライ設計
 

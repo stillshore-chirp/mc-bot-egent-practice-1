@@ -108,6 +108,21 @@ type RendezvousSafetyStopReason =
   | 'nearby_hostile'
   | 'segment_hostile';
 
+type RendezvousNavigationEvent =
+  | { event: 'goto_started'; gotoStarted: true }
+  | { event: 'goto_settled'; outcome: 'resolved' | 'rejected'; gotoStarted: true }
+  | {
+      event: 'timeout';
+      source: 'controller_deadline' | 'controller_timer' | 'pathfinder';
+      gotoStarted: boolean;
+    }
+  | {
+      event: 'stop_requested';
+      source: 'controller_deadline' | 'controller_timer';
+      gotoStarted: boolean;
+    }
+  | { event: 'disconnect_requested'; source: 'timeout_grace'; gotoStarted: true };
+
 type RendezvousBlockClassification = 'solid' | 'empty' | 'hazard' | 'unknown';
 
 type RendezvousWaypointInspection =
@@ -467,6 +482,7 @@ export class NavigationController {
     const maxRetries = this.resolveRendezvousMaxRetries();
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
+        this.logRendezvousDeadlineTimeout(false);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
@@ -477,6 +493,9 @@ export class NavigationController {
         rendezvousDeadlineAt,
       );
       if (!targetResolution.ok) {
+        if (targetResolution.error === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
+          this.logRendezvousDeadlineTimeout(false);
+        }
         return { ok: false, error: targetResolution.error };
       }
 
@@ -507,6 +526,7 @@ export class NavigationController {
       }
 
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
+        this.logRendezvousDeadlineTimeout(movement.gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
@@ -524,10 +544,14 @@ export class NavigationController {
         rendezvousDeadlineAt,
       );
       if (!observedTarget.ok) {
+        if (observedTarget.error === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
+          this.logRendezvousDeadlineTimeout(movement.gotoStarted);
+        }
         return { ok: false, error: observedTarget.error };
       }
 
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
+        this.logRendezvousDeadlineTimeout(movement.gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
@@ -611,6 +635,7 @@ export class NavigationController {
 
     for (let segment = 0; segment < MAX_RENDEZVOUS_SEGMENTS; segment += 1) {
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
+        this.logRendezvousDeadlineTimeout(gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
@@ -707,6 +732,7 @@ export class NavigationController {
       }
 
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
+        this.logRendezvousDeadlineTimeout(gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
@@ -717,9 +743,13 @@ export class NavigationController {
         rendezvousDeadlineAt,
       );
       if (!observedTarget.ok) {
+        if (observedTarget.error === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
+          this.logRendezvousDeadlineTimeout(gotoStarted);
+        }
         return observedTarget;
       }
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
+        this.logRendezvousDeadlineTimeout(gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
       targetMoved = targetMoved || this.distanceBetween(target.position, observedTarget.target.position) > TARGET_MOVED_DISTANCE;
@@ -797,6 +827,17 @@ export class NavigationController {
         ...rawWaypoint,
         y: rawWaypoint.y + verticalDirection * MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
       });
+    } else {
+      candidates.push(
+        {
+          ...rawWaypoint,
+          y: rawWaypoint.y + MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
+        },
+        {
+          ...rawWaypoint,
+          y: rawWaypoint.y - MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
+        },
+      );
     }
 
     let safeCandidateInOriginCell = false;
@@ -1195,6 +1236,19 @@ export class NavigationController {
     });
   }
 
+  /** 移動の開始・停止・settle状態だけを固定値で記録し、raw例外や座標を出さない。 */
+  private logRendezvousNavigationEvent(event: RendezvousNavigationEvent): void {
+    console.warn('[RendezvousNavigation]', event);
+  }
+
+  private logRendezvousDeadlineTimeout(gotoStarted: boolean): void {
+    this.logRendezvousNavigationEvent({
+      event: 'timeout',
+      source: 'controller_deadline',
+      gotoStarted,
+    });
+  }
+
   /** Bot利用不可の診断値は固定enumとbooleanだけに限定し、ゲーム情報をログへ渡さない。 */
   private logRendezvousBotUnavailable(
     phase: RendezvousBotUnavailablePhase,
@@ -1373,19 +1427,35 @@ export class NavigationController {
     let timedOut = false;
     let gotoSettled = false;
     if (rendezvousDeadlineAt !== undefined && this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-      this.stopRendezvousMovement(targetBot);
+      this.logRendezvousDeadlineTimeout(false);
+      this.stopRendezvousMovement(targetBot, 'controller_deadline', false);
       throw new Error('rendezvous timeout');
     }
+    this.logRendezvousNavigationEvent({ event: 'goto_started', gotoStarted: true });
     const gotoPromise = this.gotoRendezvousOnce(targetBot, goal, movements);
     const gotoSettlement = gotoPromise.then(
       () => {
         gotoSettled = true;
+        this.logRendezvousNavigationEvent({
+          event: 'goto_settled',
+          outcome: 'resolved',
+          gotoStarted: true,
+        });
       },
       () => {
         gotoSettled = true;
+        this.logRendezvousNavigationEvent({
+          event: 'goto_settled',
+          outcome: 'rejected',
+          gotoStarted: true,
+        });
       },
     );
     this.rendezvousCleanup = gotoSettlement;
+    const timeoutSource = rendezvousDeadlineAt !== undefined &&
+      this.resolveRendezvousRemainingMs(rendezvousDeadlineAt) <= this.resolveRendezvousTimeoutMs()
+      ? 'controller_deadline'
+      : 'controller_timer';
 
     try {
       await Promise.race([
@@ -1393,7 +1463,12 @@ export class NavigationController {
         new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
             timedOut = true;
-            this.stopRendezvousMovement(targetBot);
+            this.logRendezvousNavigationEvent({
+              event: 'timeout',
+              source: timeoutSource,
+              gotoStarted: true,
+            });
+            this.stopRendezvousMovement(targetBot, timeoutSource, true);
             reject(new Error('rendezvous timeout'));
           }, this.resolveRendezvousTimeoutMs(rendezvousDeadlineAt));
         }),
@@ -1408,6 +1483,13 @@ export class NavigationController {
         await gotoSettlement;
         if (this.rendezvousCleanup === gotoSettlement) {
           this.rendezvousCleanup = null;
+        }
+        if (this.classifyRendezvousPathError(error) === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
+          this.logRendezvousNavigationEvent({
+            event: 'timeout',
+            source: 'pathfinder',
+            gotoStarted: true,
+          });
         }
         throw error;
       }
@@ -1430,7 +1512,18 @@ export class NavigationController {
     }
   }
 
-  private stopRendezvousMovement(targetBot: Bot): void {
+  private stopRendezvousMovement(
+    targetBot: Bot,
+    source: 'controller_deadline' | 'controller_timer',
+    gotoStarted: boolean,
+  ): void {
+    if (gotoStarted) {
+      this.logRendezvousNavigationEvent({
+        event: 'stop_requested',
+        source,
+        gotoStarted: true,
+      });
+    }
     try {
       targetBot.pathfinder.setGoal(null);
     } catch {
@@ -1457,6 +1550,11 @@ export class NavigationController {
   }
 
   private disconnectRendezvousBot(targetBot: Bot): void {
+    this.logRendezvousNavigationEvent({
+      event: 'disconnect_requested',
+      source: 'timeout_grace',
+      gotoStarted: true,
+    });
     try {
       const disconnectableBot = targetBot as Bot & { quit?: () => void };
       disconnectableBot.quit?.();
@@ -1486,8 +1584,9 @@ export class NavigationController {
   }
 
   private classifyRendezvousPathError(error: unknown): RendezvousErrorCode {
+    const errorName = error instanceof Error ? error.name.toLowerCase() : '';
     const message = error instanceof Error ? error.message.toLowerCase() : '';
-    if (message.includes('timeout') || message.includes('timed out')) {
+    if (errorName === 'timeout' || message.includes('timeout') || message.includes('timed out')) {
       return RENDEZVOUS_ERROR_CODES.TIMEOUT;
     }
     if (message.includes('no path') || message.includes('nopath')) {
