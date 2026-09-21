@@ -1,7 +1,8 @@
 import type { Bot } from 'mineflayer';
 import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
-import { Vec3 } from 'vec3';
+import { navigateLocally } from './localNavigation.js';
+import { acquireMovementControl } from './movementControl.js';
 import type { PlayerPositionBridgeClient } from './playerPositionBridge.js';
 import type { CommandResponse } from './types.js';
 
@@ -39,18 +40,8 @@ const PLAYER_USERNAME_PATTERN = /^[A-Za-z0-9_]{3,16}$/;
 const DEFAULT_RENDEZVOUS_STOP_DISTANCE = 2;
 const MIN_RENDEZVOUS_STOP_DISTANCE = 1;
 const MAX_RENDEZVOUS_STOP_DISTANCE = 8;
-const DEFAULT_RENDEZVOUS_TIMEOUT_MS = 30_000;
 const DEFAULT_RENDEZVOUS_DEADLINE_MS = 180_000;
 const MAX_RENDEZVOUS_DEADLINE_MS = 600_000;
-const DEFAULT_RENDEZVOUS_CANCEL_GRACE_MS = 250;
-const MAX_RENDEZVOUS_CANCEL_GRACE_MS = 2_000;
-const DEFAULT_RENDEZVOUS_MAX_RETRIES = 2;
-const TARGET_MOVED_DISTANCE = 1;
-const HOSTILE_CLEARANCE_RADIUS = 4;
-const MAX_RENDEZVOUS_SEGMENTS = 16;
-const MAX_RENDEZVOUS_SEGMENT_DISTANCE = 16;
-const MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT = 1;
-const MAX_RENDEZVOUS_WAYPOINT_GOAL_TOLERANCE = 0.49;
 
 interface RendezvousPosition {
   x: number;
@@ -80,71 +71,6 @@ interface RendezvousTargetSnapshot {
   observedAt: number;
 }
 
-interface RendezvousMovementResult {
-  ok: true;
-  target: RendezvousTargetSnapshot;
-  /** 到着判定までにpathfinder.gotoを開始したか。安全停止ログへ固定値だけ渡す。 */
-  gotoStarted: boolean;
-}
-
-type RendezvousMovementFailure = { ok: false; error: RendezvousErrorCode };
-
-type RendezvousSafetyStopPhase = 'bot' | 'target' | 'waypoint' | 'arrival' | 'segment';
-
-type RendezvousBotUnavailablePhase = 'entry' | 'execution' | 'segment' | 'post_move' | 'arrival';
-
-type RendezvousBotUnavailableGuard =
-  | 'active_bot_entity'
-  | 'execution_bot_entity'
-  | 'segment_position'
-  | 'post_move_position'
-  | 'arrival_position';
-
-type RendezvousSafetyStopReason =
-  | 'block_reader_absent'
-  | 'observation_unavailable'
-  | 'liquid_or_hazardous_block'
-  | 'unsupported_floor'
-  | 'nearby_hostile'
-  | 'segment_hostile';
-
-type RendezvousNavigationEvent =
-  | { event: 'goto_started'; gotoStarted: true }
-  | { event: 'goto_settled'; outcome: 'resolved' | 'rejected'; gotoStarted: true }
-  | {
-      event: 'timeout';
-      source: 'controller_deadline' | 'controller_timer' | 'pathfinder';
-      gotoStarted: boolean;
-    }
-  | {
-      event: 'stop_requested';
-      source: 'controller_deadline' | 'controller_timer';
-      gotoStarted: boolean;
-    }
-  | { event: 'disconnect_requested'; source: 'timeout_grace'; gotoStarted: true };
-
-type RendezvousBlockClassification = 'solid' | 'empty' | 'hazard' | 'unknown';
-
-type RendezvousWaypointInspection =
-  | { ok: true }
-  | {
-      ok: false;
-      reason:
-        | 'block_reader_absent'
-        | 'unsupported_floor'
-        | 'liquid_or_hazardous_block'
-        | 'observation_unavailable';
-    };
-
-type RendezvousWaypointSelection =
-  | { ok: true; waypoint: RendezvousPosition }
-  | { ok: false; error: RendezvousErrorCode };
-
-interface RendezvousSafetyStopContext {
-  phase: RendezvousSafetyStopPhase;
-  gotoStarted: boolean;
-}
-
 interface RendezvousCommandArgs {
   targetName: string;
   stopDistance: number;
@@ -168,9 +94,8 @@ export class NavigationController {
   private lastForcedMoveLoggedAt = 0;
   private cautiousMovements: MovementsClass | null = null;
   private digPermissiveMovements: MovementsClass | null = null;
-  /** 同じBotの合流gotoを重ねず、未settleの停止処理中も次の合流を拒否する。 */
+  /** 同じBotへの操作入力を重ねない。 */
   private rendezvousInFlight: Promise<CommandResponse> | Promise<void> | null = null;
-  private rendezvousCleanup: Promise<void> | null = null;
   private rendezvousActiveBot: Bot | null = null;
   private moveToInFlight: Promise<CommandResponse> | null = null;
   private moveToActiveBot: Bot | null = null;
@@ -181,14 +106,8 @@ export class NavigationController {
       forcedMoveRetryWindowMs: number;
       forcedMoveMaxRetries: number;
       forcedMoveRetryDelayMs: number;
-      /** 合流のpathfinder待機を有限にし、テストでは短い値を注入できる。 */
-      rendezvousTimeoutMs?: number;
       /** Bridge照会・区間移動・再試行を含む合流全体の絶対期限。 */
       rendezvousDeadlineMs?: number;
-      /** timeout後に非協調なfake/pathfinderのsettleを待つ有限grace。 */
-      rendezvousCancelGraceMs?: number;
-      /** 対象再解決を有限回に制限し、無期限追従へ変化させない。 */
-      rendezvousMaxRetries?: number;
       /** entityが未観測の対象だけへ使うPaper Bridge位置照会。 */
       playerPositionBridge?: Pick<PlayerPositionBridgeClient, 'lookup'>;
       // mineflayer-pathfinder の挙動を環境変数経由で注入し、bot.ts 側のハードコーディングを回避する。
@@ -293,11 +212,10 @@ export class NavigationController {
     const previousMovements = activePathfinder.movements;
     const shouldRestoreMovements = previousMovements !== movements;
 
-    if (shouldRestoreMovements) {
-      activePathfinder.setMovements(movements);
-    }
-
+    const release = acquireMovementControl(targetBot);
+    if (!release) throw new Error('navigation_busy');
     try {
+      if (shouldRestoreMovements) activePathfinder.setMovements(movements);
       for (let attempt = 0; attempt <= this.options.forcedMoveMaxRetries; attempt++) {
         try {
           await activePathfinder.goto(goal);
@@ -315,9 +233,8 @@ export class NavigationController {
         }
       }
     } finally {
-      if (shouldRestoreMovements) {
-        activePathfinder.setMovements(previousMovements);
-      }
+      try { if (shouldRestoreMovements) activePathfinder.setMovements(previousMovements); }
+      finally { release(); }
     }
 
     throw new Error('Pathfinding failed after forcedMove retries');
@@ -406,490 +323,41 @@ export class NavigationController {
     }
   }
 
-  /**
-   * チャット話者への一回限りの合流を実行する。
-   *
-   * 話者名の自然言語解釈は Python 側で済ませ、Node 側では Bot.players の完全一致か
-   * 認証済みPaper Bridgeの完全一致照会だけを信頼する。対象の現在位置は区間ごとと
-   * 到着直後に再観測し、移動中の対象を無期限に追いかけない。合流では掘削profileへ切り替えない。
-   */
+  /** 話者を毎歩再解決し、局所観測・自前探索・基本操作で合流する。 */
   async handleFollowPlayerCommand(
     args: Record<string, unknown>,
     dependencies: { getActiveBot: () => Bot | null },
   ): Promise<CommandResponse> {
     const parsed = this.parseRendezvousCommandArgs(args);
-    if (!parsed.ok) {
-      return { ok: false, error: parsed.error };
-    }
-
-    const activeBot = dependencies.getActiveBot();
-    if (!activeBot?.entity) {
-      this.logRendezvousBotUnavailable('entry', 'active_bot_entity', activeBot, false);
-      return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
-    }
-
-    if (this.rendezvousInFlight) {
-      if (this.rendezvousActiveBot === activeBot) {
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY };
-      }
-
-      // reconnect後の新しいBotは、切断済み旧Botの未settle Promiseと分離する。
-      // 旧Bot側のcleanupが後から解消しても、新しいBotのlockを触らない。
-      this.rendezvousInFlight = null;
-      this.rendezvousCleanup = null;
-      this.rendezvousActiveBot = null;
-    }
-
-    if (this.moveToInFlight && this.moveToActiveBot === activeBot) {
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    const bot = dependencies.getActiveBot();
+    if (!bot?.entity) return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
+    if ((this.rendezvousInFlight && this.rendezvousActiveBot === bot) ||
+        (this.moveToInFlight && this.moveToActiveBot === bot)) {
       return { ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY };
     }
-
-    const command = this.executeFollowPlayerCommand(parsed, {
-      getActiveBot: () => {
-        // 入口確認後にBotが入れ替わった場合は、旧Botを使い続けず安全停止する。
-        const currentBot = dependencies.getActiveBot();
-        return currentBot === activeBot ? activeBot : null;
+    const dimension = this.resolveBotDimension(bot);
+    if (!dimension) return { ok: false, error: RENDEZVOUS_ERROR_CODES.DIMENSION_UNKNOWN };
+    const deadlineAt = Date.now() + this.resolveRendezvousDeadlineMs();
+    const command = navigateLocally(bot, {
+      stopDistance: parsed.args.stopDistance,
+      deadlineAt,
+      current: () => dependencies.getActiveBot() === bot && !!bot.entity,
+      dimensionMatches: () => this.resolveBotDimension(bot) === dimension,
+      target: async () => {
+        const resolved = await this.resolveRendezvousTargetWithDeadline(bot, parsed.args.targetName, dimension, deadlineAt);
+        return resolved.ok ? { ok: true, position: resolved.target.position } : resolved;
       },
     });
-    this.rendezvousActiveBot = activeBot;
+    this.rendezvousActiveBot = bot;
     this.rendezvousInFlight = command;
-    try {
-      return await command;
-    } finally {
-      this.releaseRendezvousWhenSettled(command);
-    }
-  }
-
-  private async executeFollowPlayerCommand(
-    parsed: { args: RendezvousCommandArgs },
-    dependencies: { getActiveBot: () => Bot | null },
-  ): Promise<CommandResponse> {
-    const activeBot = dependencies.getActiveBot();
-    if (!activeBot?.entity) {
-      this.logRendezvousBotUnavailable('execution', 'execution_bot_entity', activeBot, false);
-      return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
-    }
-    if (!activeBot.pathfinder || typeof activeBot.pathfinder.goto !== 'function') {
-      return { ok: false, error: RENDEZVOUS_ERROR_CODES.PATH_FAILED };
-    }
-
-    const rendezvousDeadlineAt = Date.now() + this.resolveRendezvousDeadlineMs();
-    const botDimension = this.resolveBotDimension(activeBot);
-    if (!botDimension) {
-      return { ok: false, error: RENDEZVOUS_ERROR_CODES.DIMENSION_UNKNOWN };
-    }
-
-    const maxRetries = this.resolveRendezvousMaxRetries();
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-        this.logRendezvousDeadlineTimeout(false);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
-      }
-
-      const targetResolution = await this.resolveRendezvousTargetWithDeadline(
-        activeBot,
-        parsed.args.targetName,
-        botDimension,
-        rendezvousDeadlineAt,
-      );
-      if (!targetResolution.ok) {
-        if (targetResolution.error === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
-          this.logRendezvousDeadlineTimeout(false);
-        }
-        return { ok: false, error: targetResolution.error };
-      }
-
-      let movement: RendezvousMovementResult | RendezvousMovementFailure;
-      try {
-        movement = await this.moveRendezvousSegments(
-          activeBot,
-          parsed.args.targetName,
-          botDimension,
-          parsed.args.stopDistance,
-          targetResolution.target,
-          rendezvousDeadlineAt,
-        );
-      } catch {
-        movement = { ok: false, error: RENDEZVOUS_ERROR_CODES.PATH_FAILED };
-      }
-      if (!movement.ok) {
-        // timeout後の内部gotoが解消する前に次のgotoを重ねると危険なため、
-        // timeoutはここで停止し、再試行はしない。
-        if (
-          (movement.error === RENDEZVOUS_ERROR_CODES.NO_PATH ||
-            movement.error === RENDEZVOUS_ERROR_CODES.PATH_FAILED) &&
-          attempt < maxRetries
-        ) {
-          continue;
-        }
-        return { ok: false, error: movement.error };
-      }
-
-      if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-        this.logRendezvousDeadlineTimeout(movement.gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
-      }
-
-      const arrivedPosition = this.readRendezvousPosition(activeBot.entity?.position);
-      if (!arrivedPosition) {
-        this.logRendezvousBotUnavailable('arrival', 'arrival_position', activeBot, movement.gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
-      }
-
-      // 到着判定の直前にも対象を取り直す。Bridge観測値を成功条件としてキャッシュしない。
-      const observedTarget = await this.resolveRendezvousTargetWithDeadline(
-        activeBot,
-        parsed.args.targetName,
-        botDimension,
-        rendezvousDeadlineAt,
-      );
-      if (!observedTarget.ok) {
-        if (observedTarget.error === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
-          this.logRendezvousDeadlineTimeout(movement.gotoStarted);
-        }
-        return { ok: false, error: observedTarget.error };
-      }
-
-      if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-        this.logRendezvousDeadlineTimeout(movement.gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
-      }
-
-      const observedTargetHazard = this.inspectRendezvousHazard(
-        activeBot,
-        observedTarget.target.position,
-        { phase: 'arrival', gotoStarted: movement.gotoStarted },
-      );
-      if (observedTargetHazard) {
-        return { ok: false, error: observedTargetHazard };
-      }
-
-      const targetMovedDistance = this.distanceBetween(
-        movement.target.position,
-        observedTarget.target.position,
-      );
-      const arrivalDistance = this.distanceBetween(arrivedPosition, observedTarget.target.position);
-
-      if (Number.isFinite(arrivalDistance) && arrivalDistance <= parsed.args.stopDistance) {
-        return { ok: true };
-      }
-
-      if (attempt < maxRetries) {
-        continue;
-      }
-
-      return {
-        ok: false,
-        error:
-          targetMovedDistance > TARGET_MOVED_DISTANCE
-            ? RENDEZVOUS_ERROR_CODES.TARGET_MOVED
-            : RENDEZVOUS_ERROR_CODES.ARRIVAL_UNCONFIRMED,
-      };
-    }
-
-    return { ok: false, error: RENDEZVOUS_ERROR_CODES.PATH_FAILED };
-  }
-
-  /**
-   * timeout後にgoto Promiseがまだ解消していない場合は、そのPromiseをlockの対象に残す。
-   * これにより、有限graceを超える非協調fakeでも返答後の並行gotoを許可しない。
-   */
-  private releaseRendezvousWhenSettled(command: Promise<CommandResponse>): void {
-    if (this.rendezvousInFlight !== command) {
-      return;
-    }
-
-    const cleanup = this.rendezvousCleanup;
-    if (!cleanup) {
-      this.rendezvousInFlight = null;
-      this.rendezvousActiveBot = null;
-      return;
-    }
-
-    this.rendezvousInFlight = cleanup;
-    void cleanup.then(() => {
-      if (this.rendezvousInFlight === cleanup) {
+    try { return await command; }
+    finally {
+      if (this.rendezvousInFlight === command) {
         this.rendezvousInFlight = null;
-        this.rendezvousCleanup = null;
         this.rendezvousActiveBot = null;
       }
-    });
-  }
-
-  /**
-   * 未ロードの遠距離目的地へ一度に直行せず、観測可能な短い区間だけ進める。
-   * 各区間の完了後に対象を再解決するため、Bridge の古い座標を無期限に追跡しない。
-   */
-  private async moveRendezvousSegments(
-    targetBot: Bot,
-    targetName: string,
-    botDimension: string,
-    stopDistance: number,
-    initialTarget: RendezvousTargetSnapshot,
-    rendezvousDeadlineAt: number,
-  ): Promise<RendezvousMovementResult | RendezvousMovementFailure> {
-    let target = initialTarget;
-    let previousBotPosition: RendezvousPosition | null = null;
-    let targetMoved = false;
-    let gotoStarted = false;
-
-    for (let segment = 0; segment < MAX_RENDEZVOUS_SEGMENTS; segment += 1) {
-      if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-        this.logRendezvousDeadlineTimeout(gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
-      }
-
-      const botPosition = this.readRendezvousPosition(targetBot.entity?.position);
-      if (!botPosition) {
-        this.logRendezvousBotUnavailable('segment', 'segment_position', targetBot, gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
-      }
-
-      const currentHazard = this.inspectRendezvousHazard(
-        targetBot,
-        botPosition,
-        { phase: 'bot', gotoStarted },
-      );
-      if (currentHazard) {
-        return { ok: false, error: currentHazard };
-      }
-
-      const distance = this.distanceBetween(botPosition, target.position);
-      if (!Number.isFinite(distance)) {
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TARGET_UNAVAILABLE };
-      }
-      if (distance <= stopDistance) {
-        return { ok: true, target, gotoStarted };
-      }
-
-      // 目的地が遠距離かつBridge由来なら、未観測chunkのblockAt(null)を
-      // 目的地の危険とも安全とも解釈しない。次のwaypointだけを検査する。
-      if (target.source === 'entity' || distance <= MAX_RENDEZVOUS_SEGMENT_DISTANCE) {
-        const targetHazard = this.inspectRendezvousHazard(
-          targetBot,
-          target.position,
-          { phase: 'target', gotoStarted },
-        );
-        if (targetHazard) {
-          return { ok: false, error: targetHazard };
-        }
-      }
-
-      const waypointSelection = this.selectRendezvousWaypoint(
-        targetBot,
-        botPosition,
-        target.position,
-        stopDistance,
-        { phase: 'waypoint', gotoStarted },
-      );
-      if (!waypointSelection.ok) {
-        return waypointSelection;
-      }
-      const waypoint = waypointSelection.waypoint;
-      const botWithEntities = targetBot as Bot & {
-        entities?: Record<string, RendezvousEntity | undefined>;
-      };
-      if (this.hasNearbyHostileAlongSegment(targetBot, botPosition, waypoint, botWithEntities.entities)) {
-        this.logRendezvousSafetyStop(
-          { phase: 'segment', gotoStarted },
-          'segment_hostile',
-          RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
-        );
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED };
-      }
-
-      if (previousBotPosition && this.distanceBetween(previousBotPosition, botPosition) < 0.25) {
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.NO_PATH };
-      }
-      previousBotPosition = botPosition;
-
-      const goal = new goals.GoalNear(
-        waypoint.x,
-        waypoint.y,
-        waypoint.z,
-        Math.min(
-          stopDistance,
-          this.options.moveGoalToleranceMeters,
-          MAX_RENDEZVOUS_WAYPOINT_GOAL_TOLERANCE,
-        ),
-      );
-      const cautiousMovements = this.cautiousMovements ?? targetBot.pathfinder.movements;
-
-      gotoStarted = true;
-      try {
-        await this.gotoRendezvousWithTimeout(targetBot, goal, cautiousMovements, rendezvousDeadlineAt);
-      } catch (error) {
-        return { ok: false, error: this.classifyRendezvousPathError(error) };
-      }
-
-      const afterMovePosition = this.readRendezvousPosition(targetBot.entity?.position);
-      if (!afterMovePosition) {
-        this.logRendezvousBotUnavailable('post_move', 'post_move_position', targetBot, gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
-      }
-      if (this.distanceBetween(botPosition, afterMovePosition) < 0.25) {
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.NO_PATH };
-      }
-
-      if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-        this.logRendezvousDeadlineTimeout(gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
-      }
-
-      const observedTarget = await this.resolveRendezvousTargetWithDeadline(
-        targetBot,
-        targetName,
-        botDimension,
-        rendezvousDeadlineAt,
-      );
-      if (!observedTarget.ok) {
-        if (observedTarget.error === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
-          this.logRendezvousDeadlineTimeout(gotoStarted);
-        }
-        return observedTarget;
-      }
-      if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-        this.logRendezvousDeadlineTimeout(gotoStarted);
-        return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
-      }
-      targetMoved = targetMoved || this.distanceBetween(target.position, observedTarget.target.position) > TARGET_MOVED_DISTANCE;
-      target = observedTarget.target;
     }
-
-    return {
-      ok: false,
-      error: targetMoved ? RENDEZVOUS_ERROR_CODES.TARGET_MOVED : RENDEZVOUS_ERROR_CODES.DISTANCE_LIMIT,
-    };
-  }
-
-  private buildRendezvousWaypoint(
-    origin: RendezvousPosition,
-    target: RendezvousPosition,
-    stopDistance: number,
-  ): RendezvousPosition {
-    const dx = target.x - origin.x;
-    const dz = target.z - origin.z;
-    const horizontalDistance = Math.sqrt(dx ** 2 + dz ** 2);
-    const verticalDistance = Math.abs(target.y - origin.y);
-    const horizontalTravel = Math.min(
-      MAX_RENDEZVOUS_SEGMENT_DISTANCE,
-      Math.max(0, horizontalDistance - stopDistance),
-    );
-    if (Number.isFinite(horizontalDistance) && horizontalDistance > stopDistance && horizontalTravel > 0) {
-      return {
-        x: origin.x + (dx / horizontalDistance) * horizontalTravel,
-        y: origin.y,
-        z: origin.z + (dz / horizontalDistance) * horizontalTravel,
-      };
-    }
-
-    // 高低差は一度に飛ばさず、現在のx/zで一段ずつ観測する。
-    // 空中・地中の直線waypointを生成しないため、未観測ならhazard判定で停止する。
-    if (Number.isFinite(verticalDistance) && verticalDistance > stopDistance) {
-      const verticalStep = MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT;
-      return {
-        x: origin.x,
-        y: origin.y + Math.sign(target.y - origin.y) * verticalStep,
-        z: origin.z,
-      };
-    }
-
-    if (!Number.isFinite(horizontalDistance) || !Number.isFinite(verticalDistance)) {
-      return { ...origin };
-    }
-
-    // stopDistanceは3次元距離なので、水平距離が短くても高低差2段以上を
-    // 1回のGoalNearへ渡さない。次の区間で再観測しながら一段ずつ進める。
-    const verticalStep = Math.min(MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT, verticalDistance);
-    return {
-      x: target.x,
-      y: origin.y + Math.sign(target.y - origin.y) * verticalStep,
-      z: target.z,
-    };
-  }
-
-  /** raw waypointと同じXZ列だけを、目的地方向へ最大一段補正する。 */
-  private selectRendezvousWaypoint(
-    targetBot: Bot,
-    origin: RendezvousPosition,
-    target: RendezvousPosition,
-    stopDistance: number,
-    context: RendezvousSafetyStopContext,
-  ): RendezvousWaypointSelection {
-    const rawWaypoint = this.normalizeRendezvousWaypoint(
-      this.buildRendezvousWaypoint(origin, target, stopDistance),
-    );
-    const originCell = this.normalizeRendezvousWaypoint(origin);
-    const candidates = [rawWaypoint];
-    const verticalDirection = Math.sign(target.y - origin.y);
-    if (verticalDirection !== 0) {
-      candidates.push({
-        ...rawWaypoint,
-        y: rawWaypoint.y + verticalDirection * MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
-      });
-    } else {
-      candidates.push(
-        {
-          ...rawWaypoint,
-          y: rawWaypoint.y + MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
-        },
-        {
-          ...rawWaypoint,
-          y: rawWaypoint.y - MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
-        },
-      );
-    }
-
-    let safeCandidateInOriginCell = false;
-    for (const candidate of candidates) {
-      if (Math.abs(candidate.y - originCell.y) > MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT) {
-        continue;
-      }
-      const inspection = this.inspectRendezvousWaypointBlocks(targetBot, candidate);
-      if (inspection.ok) {
-        if (
-          candidate.x === originCell.x &&
-          candidate.y === originCell.y &&
-          candidate.z === originCell.z
-        ) {
-          safeCandidateInOriginCell = true;
-          continue;
-        }
-        return { ok: true, waypoint: candidate };
-      }
-      if (inspection.reason !== 'unsupported_floor') {
-        return this.failRendezvousWaypointSelection(context, inspection.reason);
-      }
-    }
-    if (safeCandidateInOriginCell) {
-      return { ok: false, error: RENDEZVOUS_ERROR_CODES.NO_PATH };
-    }
-    return this.failRendezvousWaypointSelection(context, 'unsupported_floor');
-  }
-
-  private failRendezvousWaypointSelection(
-    context: RendezvousSafetyStopContext,
-    reason:
-      | 'block_reader_absent'
-      | 'unsupported_floor'
-      | 'liquid_or_hazardous_block'
-      | 'observation_unavailable',
-  ): RendezvousWaypointSelection {
-    const error = reason === 'observation_unavailable'
-      ? RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE
-      : RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED;
-    return {
-      ok: false,
-      error: this.logAndReturnRendezvousSafetyStop(context, reason, error),
-    };
-  }
-
-  private normalizeRendezvousWaypoint(position: RendezvousPosition): RendezvousPosition {
-    return {
-      x: Math.floor(position.x),
-      y: Math.floor(position.y),
-      z: Math.floor(position.z),
-    };
   }
 
   private parseRendezvousCommandArgs(
@@ -1118,263 +586,6 @@ export class NavigationController {
     return { x: candidate.x, y: candidate.y, z: candidate.z };
   }
 
-  private inspectRendezvousWaypointBlocks(
-    targetBot: Bot,
-    position: RendezvousPosition,
-  ): RendezvousWaypointInspection {
-    const botWithBlocks = targetBot as Bot & {
-      blockAt?: (position: Vec3, forceLoad?: boolean) => unknown;
-    };
-    if (typeof botWithBlocks.blockAt !== 'function') {
-      return { ok: false, reason: 'block_reader_absent' };
-    }
-
-    const center = new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
-    const checks = [center, center.offset(0, 1, 0), center.offset(0, -1, 0)];
-    const blocks: unknown[] = [];
-    try {
-      for (const checkPosition of checks) {
-        const block = botWithBlocks.blockAt(checkPosition, true);
-        if (!block) {
-          return { ok: false, reason: 'observation_unavailable' };
-        }
-        blocks.push(block);
-      }
-    } catch {
-      return { ok: false, reason: 'observation_unavailable' };
-    }
-
-    const classifications = blocks.map((block) => this.classifyRendezvousBlock(block));
-    if (classifications.some((classification) => classification === 'unknown')) {
-      return { ok: false, reason: 'observation_unavailable' };
-    }
-    if (classifications.some((classification) => classification === 'hazard')) {
-      return { ok: false, reason: 'liquid_or_hazardous_block' };
-    }
-    if (
-      classifications[0] !== 'empty' ||
-      classifications[1] !== 'empty' ||
-      classifications[2] !== 'solid'
-    ) {
-      return { ok: false, reason: 'unsupported_floor' };
-    }
-
-    return { ok: true };
-  }
-
-  private inspectRendezvousHazard(
-    targetBot: Bot,
-    position: RendezvousPosition,
-    context: RendezvousSafetyStopContext,
-  ): RendezvousErrorCode | null {
-    const botWithBlocks = targetBot as Bot & {
-      blockAt?: (position: Vec3, forceLoad?: boolean) => unknown;
-      entities?: Record<string, RendezvousEntity | undefined>;
-    };
-    if (typeof botWithBlocks.blockAt !== 'function') {
-      return this.logAndReturnRendezvousSafetyStop(
-        context,
-        'block_reader_absent',
-        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
-      );
-    }
-
-    const inspection = this.inspectRendezvousWaypointBlocks(targetBot, position);
-    if (!inspection.ok && inspection.reason === 'observation_unavailable') {
-      return this.logAndReturnRendezvousSafetyStop(
-        context,
-        'observation_unavailable',
-        RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
-      );
-    }
-    if (!inspection.ok && inspection.reason === 'liquid_or_hazardous_block') {
-      return this.logAndReturnRendezvousSafetyStop(
-        context,
-        'liquid_or_hazardous_block',
-        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
-      );
-    }
-    if (!inspection.ok) {
-      return this.logAndReturnRendezvousSafetyStop(
-        context,
-        'unsupported_floor',
-        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
-      );
-    }
-
-    if (this.hasNearbyHostile(targetBot, position, botWithBlocks.entities)) {
-      return this.logAndReturnRendezvousSafetyStop(
-        context,
-        'nearby_hostile',
-        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
-      );
-    }
-
-    return null;
-  }
-
-  private logAndReturnRendezvousSafetyStop(
-    context: RendezvousSafetyStopContext,
-    reason: RendezvousSafetyStopReason,
-    error: RendezvousErrorCode,
-  ): RendezvousErrorCode {
-    this.logRendezvousSafetyStop(context, reason, error);
-    return error;
-  }
-
-  /** 安全停止の診断値は固定enumだけに限定し、world/entityの値をログへ渡さない。 */
-  private logRendezvousSafetyStop(
-    context: RendezvousSafetyStopContext,
-    reason: RendezvousSafetyStopReason,
-    error: RendezvousErrorCode,
-  ): void {
-    console.warn('[RendezvousSafetyStop]', {
-      phase: context.phase,
-      reason,
-      error,
-      gotoStarted: context.gotoStarted,
-    });
-  }
-
-  /** 移動の開始・停止・settle状態だけを固定値で記録し、raw例外や座標を出さない。 */
-  private logRendezvousNavigationEvent(event: RendezvousNavigationEvent): void {
-    console.warn('[RendezvousNavigation]', event);
-  }
-
-  private logRendezvousDeadlineTimeout(gotoStarted: boolean): void {
-    this.logRendezvousNavigationEvent({
-      event: 'timeout',
-      source: 'controller_deadline',
-      gotoStarted,
-    });
-  }
-
-  /** Bot利用不可の診断値は固定enumとbooleanだけに限定し、ゲーム情報をログへ渡さない。 */
-  private logRendezvousBotUnavailable(
-    phase: RendezvousBotUnavailablePhase,
-    guard: RendezvousBotUnavailableGuard,
-    targetBot: Bot | null | undefined,
-    gotoStarted: boolean,
-  ): void {
-    let entityReady = false;
-    let positionReady = false;
-    try {
-      const entity = targetBot?.entity;
-      entityReady = Boolean(entity);
-      positionReady = this.readRendezvousPosition(entity?.position) !== null;
-    } catch {
-      // 状態取得の診断自体が失敗しても、元の安全停止を妨げない。
-    }
-
-    console.warn('[RendezvousBotUnavailable]', {
-      phase,
-      guard,
-      entityReady,
-      positionReady,
-      gotoStarted,
-      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
-    });
-  }
-
-  private classifyRendezvousBlock(block: unknown): RendezvousBlockClassification {
-    if (!block || typeof block !== 'object') {
-      return 'unknown';
-    }
-    const candidate = block as {
-      boundingBox?: unknown;
-      liquid?: unknown;
-      name?: unknown;
-      properties?: unknown;
-      isWaterlogged?: unknown;
-      waterlogged?: unknown;
-    };
-    if (typeof candidate.name !== 'string' || candidate.name.trim() === '') {
-      return 'unknown';
-    }
-    if (typeof candidate.boundingBox !== 'string' || candidate.boundingBox.trim() === '') {
-      return 'unknown';
-    }
-
-    const name = candidate.name.toLowerCase();
-    const normalizedName = name.startsWith('minecraft:') ? name.slice('minecraft:'.length) : name;
-    const boundingBox = candidate.boundingBox.toLowerCase();
-    if (
-      candidate.liquid === true ||
-      candidate.isWaterlogged === true ||
-      (typeof candidate.isWaterlogged === 'string' && candidate.isWaterlogged.toLowerCase() === 'true') ||
-      candidate.waterlogged === true ||
-      (typeof candidate.waterlogged === 'string' && candidate.waterlogged.toLowerCase() === 'true') ||
-      this.isRendezvousWaterlogged(candidate.properties) ||
-      boundingBox === 'liquid' ||
-      normalizedName === 'bubble_column' ||
-      name.includes('water') ||
-      name.includes('lava') ||
-      name.includes('magma')
-    ) {
-      return 'hazard';
-    }
-    const isAirName = normalizedName === 'air' || normalizedName === 'cave_air' || normalizedName === 'void_air';
-    if (boundingBox === 'empty' || isAirName) {
-      return 'empty';
-    }
-    if (boundingBox === 'block') {
-      return 'solid';
-    }
-    return 'unknown';
-  }
-
-  private isRendezvousWaterlogged(properties: unknown): boolean {
-    if (!properties || typeof properties !== 'object') {
-      return false;
-    }
-    const waterlogged = (properties as { waterlogged?: unknown }).waterlogged;
-    return waterlogged === true || (typeof waterlogged === 'string' && waterlogged.toLowerCase() === 'true');
-  }
-
-  private hasNearbyHostile(
-    targetBot: Bot,
-    position: RendezvousPosition,
-    entities: Record<string, RendezvousEntity | undefined> | undefined,
-  ): boolean {
-    for (const entity of Object.values(entities ?? {})) {
-      if (!entity || entity === targetBot.entity) {
-        continue;
-      }
-      const type = String(entity.type ?? '').toLowerCase();
-      const kind = String(entity.kind ?? '').toLowerCase();
-      if (type !== 'hostile' && !kind.includes('hostile')) {
-        continue;
-      }
-      const entityPosition = this.readRendezvousPosition(entity.position);
-      if (entityPosition && this.distanceBetween(position, entityPosition) <= HOSTILE_CLEARANCE_RADIUS) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private hasNearbyHostileAlongSegment(
-    targetBot: Bot,
-    start: RendezvousPosition,
-    end: RendezvousPosition,
-    entities: Record<string, RendezvousEntity | undefined> | undefined,
-  ): boolean {
-    const distance = this.distanceBetween(start, end);
-    const sampleCount = Math.max(1, Math.ceil(distance / (HOSTILE_CLEARANCE_RADIUS / 2)));
-    for (let index = 0; index <= sampleCount; index += 1) {
-      const ratio = index / sampleCount;
-      const sample = {
-        x: start.x + (end.x - start.x) * ratio,
-        y: start.y + (end.y - start.y) * ratio,
-        z: start.z + (end.z - start.z) * ratio,
-      };
-      if (this.hasNearbyHostile(targetBot, sample, entities)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   private resolveRendezvousDeadlineMs(): number {
     const configured = this.options.rendezvousDeadlineMs;
     if (typeof configured !== 'number' || !Number.isFinite(configured) || configured <= 0) {
@@ -1385,222 +596,6 @@ export class NavigationController {
 
   private resolveRendezvousRemainingMs(rendezvousDeadlineAt: number): number {
     return Math.max(0, rendezvousDeadlineAt - Date.now());
-  }
-
-  private isRendezvousDeadlineExpired(rendezvousDeadlineAt: number): boolean {
-    return this.resolveRendezvousRemainingMs(rendezvousDeadlineAt) <= 0;
-  }
-
-  private resolveRendezvousTimeoutMs(rendezvousDeadlineAt?: number): number {
-    const configured = this.options.rendezvousTimeoutMs;
-    const segmentTimeoutMs = typeof configured === 'number' && Number.isFinite(configured) && configured > 0
-      ? configured
-      : DEFAULT_RENDEZVOUS_TIMEOUT_MS;
-    if (rendezvousDeadlineAt === undefined) {
-      return segmentTimeoutMs;
-    }
-    return Math.min(segmentTimeoutMs, this.resolveRendezvousRemainingMs(rendezvousDeadlineAt));
-  }
-
-  private resolveRendezvousCancelGraceMs(): number {
-    const configured = this.options.rendezvousCancelGraceMs;
-    if (typeof configured !== 'number' || !Number.isFinite(configured) || configured < 0) {
-      return DEFAULT_RENDEZVOUS_CANCEL_GRACE_MS;
-    }
-    return Math.min(Math.floor(configured), MAX_RENDEZVOUS_CANCEL_GRACE_MS);
-  }
-
-  private resolveRendezvousMaxRetries(): number {
-    const configured = this.options.rendezvousMaxRetries;
-    return typeof configured === 'number' && Number.isInteger(configured) && configured >= 0
-      ? Math.min(configured, 3)
-      : DEFAULT_RENDEZVOUS_MAX_RETRIES;
-  }
-
-  private async gotoRendezvousWithTimeout(
-    targetBot: Bot,
-    goal: InstanceType<typeof goals.GoalNear>,
-    movements: MovementsClass,
-    rendezvousDeadlineAt?: number,
-  ): Promise<void> {
-    let timeoutHandle: NodeJS.Timeout | null = null;
-    let timedOut = false;
-    let gotoSettled = false;
-    if (rendezvousDeadlineAt !== undefined && this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
-      this.logRendezvousDeadlineTimeout(false);
-      this.stopRendezvousMovement(targetBot, 'controller_deadline', false);
-      throw new Error('rendezvous timeout');
-    }
-    this.logRendezvousNavigationEvent({ event: 'goto_started', gotoStarted: true });
-    const gotoPromise = this.gotoRendezvousOnce(targetBot, goal, movements);
-    const gotoSettlement = gotoPromise.then(
-      () => {
-        gotoSettled = true;
-        this.logRendezvousNavigationEvent({
-          event: 'goto_settled',
-          outcome: 'resolved',
-          gotoStarted: true,
-        });
-      },
-      () => {
-        gotoSettled = true;
-        this.logRendezvousNavigationEvent({
-          event: 'goto_settled',
-          outcome: 'rejected',
-          gotoStarted: true,
-        });
-      },
-    );
-    this.rendezvousCleanup = gotoSettlement;
-    const timeoutSource = rendezvousDeadlineAt !== undefined &&
-      this.resolveRendezvousRemainingMs(rendezvousDeadlineAt) <= this.resolveRendezvousTimeoutMs()
-      ? 'controller_deadline'
-      : 'controller_timer';
-
-    try {
-      await Promise.race([
-        gotoPromise,
-        new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(() => {
-            timedOut = true;
-            this.logRendezvousNavigationEvent({
-              event: 'timeout',
-              source: timeoutSource,
-              gotoStarted: true,
-            });
-            this.stopRendezvousMovement(targetBot, timeoutSource, true);
-            reject(new Error('rendezvous timeout'));
-          }, this.resolveRendezvousTimeoutMs(rendezvousDeadlineAt));
-        }),
-      ]);
-      // gotoのfinally（movement profileの復元）まで完了してから返す。
-      await gotoSettlement;
-      if (this.rendezvousCleanup === gotoSettlement) {
-        this.rendezvousCleanup = null;
-      }
-    } catch (error) {
-      if (!timedOut) {
-        await gotoSettlement;
-        if (this.rendezvousCleanup === gotoSettlement) {
-          this.rendezvousCleanup = null;
-        }
-        if (this.classifyRendezvousPathError(error) === RENDEZVOUS_ERROR_CODES.TIMEOUT) {
-          this.logRendezvousNavigationEvent({
-            event: 'timeout',
-            source: 'pathfinder',
-            gotoStarted: true,
-          });
-        }
-        throw error;
-      }
-
-      // mineflayerのsetGoal(null)は通常次のevent loopでgotoをrejectする。
-      // 非協調fakeでも有限graceだけ待ち、返答後に既存gotoが動き続けないようにする。
-      await Promise.race([gotoSettlement, this.delay(this.resolveRendezvousCancelGraceMs())]);
-      if (gotoSettled && this.rendezvousCleanup === gotoSettlement) {
-        this.rendezvousCleanup = null;
-      } else if (!gotoSettled) {
-        // pathfinderが停止イベントを返さない境界では、Bot自体を切断して
-        // 制御不能な移動を残さない。切断操作の例外はtimeout分類へ隠す。
-        this.disconnectRendezvousBot(targetBot);
-      }
-      throw error;
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
-  }
-
-  private stopRendezvousMovement(
-    targetBot: Bot,
-    source: 'controller_deadline' | 'controller_timer',
-    gotoStarted: boolean,
-  ): void {
-    if (gotoStarted) {
-      this.logRendezvousNavigationEvent({
-        event: 'stop_requested',
-        source,
-        gotoStarted: true,
-      });
-    }
-    try {
-      targetBot.pathfinder.setGoal(null);
-    } catch {
-      // 停止操作の一部が失敗しても固定timeout分類を維持する。
-    }
-    try {
-      const pathfinder = targetBot.pathfinder as typeof targetBot.pathfinder & {
-        stop?: () => void;
-      };
-      pathfinder.stop?.();
-    } catch {
-      // 停止操作の一部が失敗しても固定timeout分類を維持する。
-    }
-    try {
-      const stoppableBot = targetBot as Bot & {
-        clearControlStates?: () => void;
-        stopDigging?: () => void;
-      };
-      stoppableBot.clearControlStates?.();
-      stoppableBot.stopDigging?.();
-    } catch {
-      // 停止操作の一部が失敗しても固定timeout分類を維持する。
-    }
-  }
-
-  private disconnectRendezvousBot(targetBot: Bot): void {
-    this.logRendezvousNavigationEvent({
-      event: 'disconnect_requested',
-      source: 'timeout_grace',
-      gotoStarted: true,
-    });
-    try {
-      const disconnectableBot = targetBot as Bot & { quit?: () => void };
-      disconnectableBot.quit?.();
-    } catch {
-      // timeout分類と、未解消cleanupのlockを維持する。
-    }
-  }
-
-  private async gotoRendezvousOnce(
-    targetBot: Bot,
-    goal: InstanceType<typeof goals.GoalNear>,
-    movements: MovementsClass,
-  ): Promise<void> {
-    const { pathfinder: activePathfinder } = targetBot;
-    const previousMovements = activePathfinder.movements;
-    const shouldRestoreMovements = previousMovements !== movements;
-    if (shouldRestoreMovements) {
-      activePathfinder.setMovements(movements);
-    }
-    try {
-      await activePathfinder.goto(goal);
-    } finally {
-      if (shouldRestoreMovements) {
-        activePathfinder.setMovements(previousMovements);
-      }
-    }
-  }
-
-  private classifyRendezvousPathError(error: unknown): RendezvousErrorCode {
-    const errorName = error instanceof Error ? error.name.toLowerCase() : '';
-    const message = error instanceof Error ? error.message.toLowerCase() : '';
-    if (errorName === 'timeout' || message.includes('timeout') || message.includes('timed out')) {
-      return RENDEZVOUS_ERROR_CODES.TIMEOUT;
-    }
-    if (message.includes('no path') || message.includes('nopath')) {
-      return RENDEZVOUS_ERROR_CODES.NO_PATH;
-    }
-    return RENDEZVOUS_ERROR_CODES.PATH_FAILED;
-  }
-
-  private distanceBetween(first: RendezvousPosition, second: RendezvousPosition): number {
-    return Math.sqrt(
-      (first.x - second.x) ** 2 +
-        (first.y - second.y) ** 2 +
-        (first.z - second.z) ** 2,
-    );
   }
 
   private delay(ms: number): Promise<void> {
