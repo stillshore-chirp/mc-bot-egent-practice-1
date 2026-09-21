@@ -500,7 +500,41 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     });
   });
 
-  it('高低差のwaypointでunsupported floorを検知してもhazard errorを維持する', async () => {
+  it('waypoint探索中にblock readerが欠損しても旧hazard契約を維持する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    const botWithBlockAt = fixture.bot as unknown as {
+      blockAt: ReturnType<typeof vi.fn>;
+    };
+    let calls = 0;
+    botWithBlockAt.blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      calls += 1;
+      const block = position.y === 63
+        ? { name: 'stone', boundingBox: 'block' }
+        : { name: 'air', boundingBox: 'empty' };
+      if (calls === 6) {
+        delete (fixture.bot as unknown as { blockAt?: unknown }).blockAt;
+      }
+      return block;
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'block_reader_absent',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('実空洞のwaypointでunsupported floorを検知してもhazard errorを維持する', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const controller = createRendezvousController();
     const fixture = createRendezvousBotFixture();
@@ -523,6 +557,332 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
       phase: 'waypoint',
       reason: 'unsupported_floor',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('観測済みの一段上の足場を水平waypointとして選び、合流を開始する', async () => {
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 65, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if ((x === 2 || x === 4) && position.y === 64) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    const [goal] = fixture.goto.mock.calls[0] as [{ x: number; y: number; z: number }];
+    expect(goal.x).toBe(2);
+    expect(goal.y).toBe(65);
+    expect(goal.z).toBe(0);
+
+    const goalWithEnd = goal as unknown as {
+      rangeSq: number;
+      isEnd: (node: { x: number; y: number; z: number }) => boolean;
+    };
+    expect(goalWithEnd.rangeSq).toBeLessThan(1);
+    expect(goalWithEnd.isEnd({ x: 0, y: 64, z: 0 })).toBe(false);
+    expect(goalWithEnd.isEnd({ x: 3, y: 65, z: 0 })).toBe(false);
+    expect(goalWithEnd.isEnd({ x: 2, y: 65, z: 0 })).toBe(true);
+  });
+
+  it('oak_stairsを空気名の部分一致で誤判定せず、一段上りの足場として選ぶ', async () => {
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 65, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1 || x === 4) && position.y === (x === 4 ? 64 : 63)) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 2 && position.y === 63) {
+        return { name: 'oak_stairs', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    const [goal] = fixture.goto.mock.calls[0] as [{ x: number; y: number; z: number }];
+    expect(goal.x).toBe(2);
+    expect(goal.y).toBe(64);
+    expect(goal.z).toBe(0);
+  });
+
+  it('端数座標で同一セルへ潰れるwaypointは開始ノードを成功扱いしない', async () => {
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.botEntity.position = { x: 0.4, y: 64, z: 0 };
+    fixture.targetEntity.position = { x: 1.5, y: 64, z: 0 };
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 1, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.NO_PATH });
+    expect(fixture.goto).not.toHaveBeenCalled();
+  });
+
+  it('観測不能なwaypoint候補は代替候補を含めてfail-closedにする', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 65, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 4 && position.y === 64) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 2) {
+        return { name: 'unobserved_block', boundingBox: 'unreported' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'observation_unavailable',
+      error: RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
+      gotoStarted: false,
+    });
+  });
+
+  it('nullのwaypoint観測は空洞として扱わず観測不能で停止する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 65, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 4 && position.y === 64) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 2) {
+        return null;
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'observation_unavailable',
+      error: RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
+      gotoStarted: false,
+    });
+  });
+
+  it('下りの一段だけを観測済みの足場として選び、二段以上は飛び越えない', async () => {
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 63, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if ((x === 2 || x === 4) && position.y === 62) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    const [goal] = fixture.goto.mock.calls[0] as [{ x: number; y: number; z: number }];
+    expect(goal.y).toBe(63);
+  });
+
+  it('二段先の足場だけが観測済みでも一段補正で飛び越えない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 66, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 4 && position.y === 65) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'unsupported_floor',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('小数originでもfloor基準の二段目支持面をwaypointへ採用しない', () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.botEntity.position = { x: 0, y: 64.5, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if (x === 0 && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 0 && position.y === 65) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const selectWaypoint = (controller as unknown as {
+      selectRendezvousWaypoint: (
+        targetBot: Bot,
+        origin: { x: number; y: number; z: number },
+        target: { x: number; y: number; z: number },
+        stopDistance: number,
+        context: { phase: 'waypoint'; gotoStarted: boolean },
+      ) => { ok: true; waypoint: { x: number; y: number; z: number } } | { ok: false; error: string };
+    }).selectRendezvousWaypoint.bind(controller);
+    const response = selectWaypoint(
+      fixture.bot,
+      { x: 0, y: 64.5, z: 0 },
+      { x: 1, y: 67, z: 0 },
+      2,
+      { phase: 'waypoint', gotoStarted: false },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'unsupported_floor',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('waterloggedなwaypoint候補は足場に見えても停止する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 65, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 4 && position.y === 64) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 2 && position.y === 64) {
+        return { name: 'stone', boundingBox: 'block', isWaterlogged: true };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'liquid_or_hazardous_block',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('boundingBoxがemptyのbubble_columnも液体として停止する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 65, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 4 && position.y === 64) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 2 && position.y === 64) {
+        return { name: 'minecraft:bubble_column', boundingBox: 'empty' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'liquid_or_hazardous_block',
       error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
       gotoStarted: false,
     });

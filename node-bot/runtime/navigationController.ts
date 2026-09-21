@@ -49,6 +49,8 @@ const TARGET_MOVED_DISTANCE = 1;
 const HOSTILE_CLEARANCE_RADIUS = 4;
 const MAX_RENDEZVOUS_SEGMENTS = 16;
 const MAX_RENDEZVOUS_SEGMENT_DISTANCE = 16;
+const MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT = 1;
+const MAX_RENDEZVOUS_WAYPOINT_GOAL_TOLERANCE = 0.49;
 
 interface RendezvousPosition {
   x: number;
@@ -96,6 +98,23 @@ type RendezvousSafetyStopReason =
   | 'unsupported_floor'
   | 'nearby_hostile'
   | 'segment_hostile';
+
+type RendezvousBlockClassification = 'solid' | 'empty' | 'hazard' | 'unknown';
+
+type RendezvousWaypointInspection =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | 'block_reader_absent'
+        | 'unsupported_floor'
+        | 'liquid_or_hazardous_block'
+        | 'observation_unavailable';
+    };
+
+type RendezvousWaypointSelection =
+  | { ok: true; waypoint: RendezvousPosition }
+  | { ok: false; error: RendezvousErrorCode };
 
 interface RendezvousSafetyStopContext {
   phase: RendezvousSafetyStopPhase;
@@ -612,15 +631,17 @@ export class NavigationController {
         }
       }
 
-      const waypoint = this.buildRendezvousWaypoint(botPosition, target.position, stopDistance);
-      const waypointHazard = this.inspectRendezvousHazard(
+      const waypointSelection = this.selectRendezvousWaypoint(
         targetBot,
-        waypoint,
+        botPosition,
+        target.position,
+        stopDistance,
         { phase: 'waypoint', gotoStarted },
       );
-      if (waypointHazard) {
-        return { ok: false, error: waypointHazard };
+      if (!waypointSelection.ok) {
+        return waypointSelection;
       }
+      const waypoint = waypointSelection.waypoint;
       const botWithEntities = targetBot as Bot & {
         entities?: Record<string, RendezvousEntity | undefined>;
       };
@@ -642,7 +663,11 @@ export class NavigationController {
         waypoint.x,
         waypoint.y,
         waypoint.z,
-        Math.min(stopDistance, this.options.moveGoalToleranceMeters),
+        Math.min(
+          stopDistance,
+          this.options.moveGoalToleranceMeters,
+          MAX_RENDEZVOUS_WAYPOINT_GOAL_TOLERANCE,
+        ),
       );
       const cautiousMovements = this.cautiousMovements ?? targetBot.pathfinder.movements;
 
@@ -711,7 +736,7 @@ export class NavigationController {
     // 高低差は一度に飛ばさず、現在のx/zで一段ずつ観測する。
     // 空中・地中の直線waypointを生成しないため、未観測ならhazard判定で停止する。
     if (Number.isFinite(verticalDistance) && verticalDistance > stopDistance) {
-      const verticalStep = Math.min(1, verticalDistance - stopDistance);
+      const verticalStep = MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT;
       return {
         x: origin.x,
         y: origin.y + Math.sign(target.y - origin.y) * verticalStep,
@@ -722,7 +747,88 @@ export class NavigationController {
     if (!Number.isFinite(horizontalDistance) || !Number.isFinite(verticalDistance)) {
       return { ...origin };
     }
-    return { ...target };
+
+    // stopDistanceは3次元距離なので、水平距離が短くても高低差2段以上を
+    // 1回のGoalNearへ渡さない。次の区間で再観測しながら一段ずつ進める。
+    const verticalStep = Math.min(MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT, verticalDistance);
+    return {
+      x: target.x,
+      y: origin.y + Math.sign(target.y - origin.y) * verticalStep,
+      z: target.z,
+    };
+  }
+
+  /** raw waypointと同じXZ列だけを、目的地方向へ最大一段補正する。 */
+  private selectRendezvousWaypoint(
+    targetBot: Bot,
+    origin: RendezvousPosition,
+    target: RendezvousPosition,
+    stopDistance: number,
+    context: RendezvousSafetyStopContext,
+  ): RendezvousWaypointSelection {
+    const rawWaypoint = this.normalizeRendezvousWaypoint(
+      this.buildRendezvousWaypoint(origin, target, stopDistance),
+    );
+    const originCell = this.normalizeRendezvousWaypoint(origin);
+    const candidates = [rawWaypoint];
+    const verticalDirection = Math.sign(target.y - origin.y);
+    if (verticalDirection !== 0) {
+      candidates.push({
+        ...rawWaypoint,
+        y: rawWaypoint.y + verticalDirection * MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT,
+      });
+    }
+
+    let safeCandidateInOriginCell = false;
+    for (const candidate of candidates) {
+      if (Math.abs(candidate.y - originCell.y) > MAX_RENDEZVOUS_WAYPOINT_VERTICAL_ADJUSTMENT) {
+        continue;
+      }
+      const inspection = this.inspectRendezvousWaypointBlocks(targetBot, candidate);
+      if (inspection.ok) {
+        if (
+          candidate.x === originCell.x &&
+          candidate.y === originCell.y &&
+          candidate.z === originCell.z
+        ) {
+          safeCandidateInOriginCell = true;
+          continue;
+        }
+        return { ok: true, waypoint: candidate };
+      }
+      if (inspection.reason !== 'unsupported_floor') {
+        return this.failRendezvousWaypointSelection(context, inspection.reason);
+      }
+    }
+    if (safeCandidateInOriginCell) {
+      return { ok: false, error: RENDEZVOUS_ERROR_CODES.NO_PATH };
+    }
+    return this.failRendezvousWaypointSelection(context, 'unsupported_floor');
+  }
+
+  private failRendezvousWaypointSelection(
+    context: RendezvousSafetyStopContext,
+    reason:
+      | 'block_reader_absent'
+      | 'unsupported_floor'
+      | 'liquid_or_hazardous_block'
+      | 'observation_unavailable',
+  ): RendezvousWaypointSelection {
+    const error = reason === 'observation_unavailable'
+      ? RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE
+      : RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED;
+    return {
+      ok: false,
+      error: this.logAndReturnRendezvousSafetyStop(context, reason, error),
+    };
+  }
+
+  private normalizeRendezvousWaypoint(position: RendezvousPosition): RendezvousPosition {
+    return {
+      x: Math.floor(position.x),
+      y: Math.floor(position.y),
+      z: Math.floor(position.z),
+    };
   }
 
   private parseRendezvousCommandArgs(
@@ -951,6 +1057,50 @@ export class NavigationController {
     return { x: candidate.x, y: candidate.y, z: candidate.z };
   }
 
+  private inspectRendezvousWaypointBlocks(
+    targetBot: Bot,
+    position: RendezvousPosition,
+  ): RendezvousWaypointInspection {
+    const botWithBlocks = targetBot as Bot & {
+      blockAt?: (position: Vec3, forceLoad?: boolean) => unknown;
+    };
+    if (typeof botWithBlocks.blockAt !== 'function') {
+      return { ok: false, reason: 'block_reader_absent' };
+    }
+
+    const center = new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+    const checks = [center, center.offset(0, 1, 0), center.offset(0, -1, 0)];
+    const blocks: unknown[] = [];
+    try {
+      for (const checkPosition of checks) {
+        const block = botWithBlocks.blockAt(checkPosition, true);
+        if (!block) {
+          return { ok: false, reason: 'observation_unavailable' };
+        }
+        blocks.push(block);
+      }
+    } catch {
+      return { ok: false, reason: 'observation_unavailable' };
+    }
+
+    const classifications = blocks.map((block) => this.classifyRendezvousBlock(block));
+    if (classifications.some((classification) => classification === 'unknown')) {
+      return { ok: false, reason: 'observation_unavailable' };
+    }
+    if (classifications.some((classification) => classification === 'hazard')) {
+      return { ok: false, reason: 'liquid_or_hazardous_block' };
+    }
+    if (
+      classifications[0] !== 'empty' ||
+      classifications[1] !== 'empty' ||
+      classifications[2] !== 'solid'
+    ) {
+      return { ok: false, reason: 'unsupported_floor' };
+    }
+
+    return { ok: true };
+  }
+
   private inspectRendezvousHazard(
     targetBot: Bot,
     position: RendezvousPosition,
@@ -968,40 +1118,22 @@ export class NavigationController {
       );
     }
 
-    const center = new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
-    const checks = [center, center.offset(0, 1, 0), center.offset(0, -1, 0)];
-    const blocks = [] as unknown[];
-    try {
-      for (const checkPosition of checks) {
-        const block = botWithBlocks.blockAt(checkPosition, true);
-        if (!block) {
-          return this.logAndReturnRendezvousSafetyStop(
-            context,
-            'observation_unavailable',
-            RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
-          );
-        }
-        blocks.push(block);
-      }
-    } catch {
+    const inspection = this.inspectRendezvousWaypointBlocks(targetBot, position);
+    if (!inspection.ok && inspection.reason === 'observation_unavailable') {
       return this.logAndReturnRendezvousSafetyStop(
         context,
         'observation_unavailable',
         RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
       );
     }
-
-    if (blocks.some((block) => this.isRendezvousDangerousBlock(block))) {
+    if (!inspection.ok && inspection.reason === 'liquid_or_hazardous_block') {
       return this.logAndReturnRendezvousSafetyStop(
         context,
         'liquid_or_hazardous_block',
         RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
       );
     }
-
-    const below = blocks[2] as { boundingBox?: unknown; name?: unknown };
-    const belowName = String(below.name ?? '').toLowerCase();
-    if (below.boundingBox === 'empty' || belowName.includes('air')) {
+    if (!inspection.ok) {
       return this.logAndReturnRendezvousSafetyStop(
         context,
         'unsupported_floor',
@@ -1043,13 +1175,59 @@ export class NavigationController {
     });
   }
 
-  private isRendezvousDangerousBlock(block: unknown): boolean {
+  private classifyRendezvousBlock(block: unknown): RendezvousBlockClassification {
     if (!block || typeof block !== 'object') {
-      return true;
+      return 'unknown';
     }
-    const candidate = block as { liquid?: unknown; name?: unknown };
-    const name = String(candidate.name ?? '').toLowerCase();
-    return candidate.liquid === true || name.includes('water') || name.includes('lava') || name.includes('magma');
+    const candidate = block as {
+      boundingBox?: unknown;
+      liquid?: unknown;
+      name?: unknown;
+      properties?: unknown;
+      isWaterlogged?: unknown;
+      waterlogged?: unknown;
+    };
+    if (typeof candidate.name !== 'string' || candidate.name.trim() === '') {
+      return 'unknown';
+    }
+    if (typeof candidate.boundingBox !== 'string' || candidate.boundingBox.trim() === '') {
+      return 'unknown';
+    }
+
+    const name = candidate.name.toLowerCase();
+    const normalizedName = name.startsWith('minecraft:') ? name.slice('minecraft:'.length) : name;
+    const boundingBox = candidate.boundingBox.toLowerCase();
+    if (
+      candidate.liquid === true ||
+      candidate.isWaterlogged === true ||
+      (typeof candidate.isWaterlogged === 'string' && candidate.isWaterlogged.toLowerCase() === 'true') ||
+      candidate.waterlogged === true ||
+      (typeof candidate.waterlogged === 'string' && candidate.waterlogged.toLowerCase() === 'true') ||
+      this.isRendezvousWaterlogged(candidate.properties) ||
+      boundingBox === 'liquid' ||
+      normalizedName === 'bubble_column' ||
+      name.includes('water') ||
+      name.includes('lava') ||
+      name.includes('magma')
+    ) {
+      return 'hazard';
+    }
+    const isAirName = normalizedName === 'air' || normalizedName === 'cave_air' || normalizedName === 'void_air';
+    if (boundingBox === 'empty' || isAirName) {
+      return 'empty';
+    }
+    if (boundingBox === 'block') {
+      return 'solid';
+    }
+    return 'unknown';
+  }
+
+  private isRendezvousWaterlogged(properties: unknown): boolean {
+    if (!properties || typeof properties !== 'object') {
+      return false;
+    }
+    const waterlogged = (properties as { waterlogged?: unknown }).waterlogged;
+    return waterlogged === true || (typeof waterlogged === 'string' && waterlogged.toLowerCase() === 'true');
   }
 
   private hasNearbyHostile(
