@@ -40,12 +40,16 @@ export function createCoreCommandHandlers(deps: CoreCommandDependencies) {
       return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
     }
 
-    console.log(`[ChatCommand] sent in-game chat: ${text}`);
+    console.log(`[ChatCommand] sent in-game chat message length=${text.length}`);
     return { ok: true };
   }
 
   async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
     return deps.navigationController.handleMoveToCommand(args, { getActiveBot: deps.getActiveBot });
+  }
+
+  async function handleFollowPlayerCommand(args: Record<string, unknown>): Promise<CommandResponse> {
+    return deps.navigationController.handleFollowPlayerCommand(args, { getActiveBot: deps.getActiveBot });
   }
 
   async function handleMineOreCommand(args: Record<string, unknown>): Promise<CommandResponse> {
@@ -190,6 +194,7 @@ export function createCoreCommandHandlers(deps: CoreCommandDependencies) {
   return {
     handleChatCommand,
     handleMoveToCommand,
+    handleFollowPlayerCommand,
     handleMineOreCommand,
     handleSetAgentRoleCommand,
   };

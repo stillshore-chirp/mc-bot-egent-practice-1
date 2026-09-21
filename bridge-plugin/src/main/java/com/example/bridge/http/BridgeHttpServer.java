@@ -8,10 +8,12 @@ import com.example.bridge.http.handlers.CoreProtectBulkHandler;
 import com.example.bridge.http.handlers.DisconnectionHandler;
 import com.example.bridge.http.handlers.EventStreamHandler;
 import com.example.bridge.http.handlers.HealthHandler;
+import com.example.bridge.http.handlers.PlayerPositionHandler;
 import com.example.bridge.http.handlers.StartJobHandler;
 import com.example.bridge.http.handlers.StopJobHandler;
 import com.example.bridge.jobs.JobRegistry;
 import com.example.bridge.langgraph.LangGraphRetryHook;
+import com.example.bridge.players.PlayerPositionResolver;
 import com.example.bridge.util.AgentBridgeConfig;
 import com.example.bridge.util.CoreProtectFacade;
 import com.example.bridge.util.FunctionalBlockInspector;
@@ -94,6 +96,9 @@ public final class BridgeHttpServer {
         server.createContext(
                 "/v1/health",
                 new HealthHandler(plugin, config, mapper, logger, eventHub, worldGuardFacade, coreProtectFacade));
+        server.createContext(
+                "/v1/players/position",
+                new PlayerPositionHandler(plugin, config, mapper, logger, eventHub, new PlayerPositionResolver()));
         server.createContext(
                 "/v1/jobs/start_mine",
                 new StartJobHandler(plugin, config, mapper, logger, eventHub, jobRegistry, worldGuardFacade));

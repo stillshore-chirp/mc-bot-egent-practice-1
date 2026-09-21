@@ -4,6 +4,7 @@
 export type CommandType =
   | 'chat'
   | 'moveTo'
+  | 'followPlayer'
   | 'equipItem'
   | 'gatherStatus'
   | 'gatherVptObservation'

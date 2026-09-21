@@ -41,6 +41,7 @@ export interface RuntimeConfigValues {
     port: number;
   };
   agentBridge: BotRuntimeConfig['agentBridge'];
+  playerPositionBridge: BotRuntimeConfig['playerPositionBridge'];
   moveGoalTolerance: BotRuntimeConfig['moveGoalTolerance'];
   movement: BotRuntimeConfig['movement'];
   skills: BotRuntimeConfig['skills'];
@@ -88,6 +89,11 @@ export function loadConfigValues(
     `[AgentBridge] url=${agent.url} host=${agent.host} port=${agent.port} connectTimeoutMs=${agent.connectTimeoutMs} sendTimeoutMs=${agent.sendTimeoutMs} healthcheckIntervalMs=${agent.healthcheckIntervalMs} reconnectDelayMs=${agent.reconnectDelayMs} maxRetries=${agent.maxRetries}`,
   );
 
+  const playerPositionBridge = config.playerPositionBridge;
+  logger.info(
+    `[PlayerPositionBridge] enabled=${playerPositionBridge.enabled} timeoutMs=${playerPositionBridge.timeoutMs} maxAgeMs=${playerPositionBridge.maxObservationAgeMs}`,
+  );
+
   return {
     runtime: config,
     control: controlValues,
@@ -104,6 +110,7 @@ export function loadConfigValues(
       port: config.websocket.port,
     },
     agentBridge: config.agentBridge,
+    playerPositionBridge,
     moveGoalTolerance: config.moveGoalTolerance,
     movement,
     skills: config.skills,

@@ -21,6 +21,7 @@ export interface CommandServerDependencies {
 const SUPPORTED_COMMAND_TYPES: ReadonlySet<CommandPayload['type']> = new Set([
   'chat',
   'moveTo',
+  'followPlayer',
   'equipItem',
   'gatherStatus',
   'gatherVptObservation',
@@ -32,14 +33,17 @@ const SUPPORTED_COMMAND_TYPES: ReadonlySet<CommandPayload['type']> = new Set([
   'playVptActions',
 ]);
 
+export function isSupportedCommandType(input: unknown): input is CommandPayload['type'] {
+  return typeof input === 'string' && SUPPORTED_COMMAND_TYPES.has(input as CommandPayload['type']);
+}
+
 function isCommandPayload(input: unknown): input is CommandPayload {
   if (!input || typeof input !== 'object') {
     return false;
   }
   const candidate = input as Record<string, unknown>;
   return (
-    typeof candidate.type === 'string' &&
-    SUPPORTED_COMMAND_TYPES.has(candidate.type as CommandPayload['type']) &&
+    isSupportedCommandType(candidate.type) &&
     !!candidate.args &&
     typeof candidate.args === 'object' &&
     (candidate.meta === undefined || (candidate.meta !== null && typeof candidate.meta === 'object'))
@@ -109,7 +113,8 @@ export function startCommandServer(
             'ws.payload_length': rawText.length,
           },
           async (span) => {
-            console.log(`[WS] (${clientId}) received payload: ${rawText}`);
+            // チャット本文・座標・対象名をログへ残さず、型とサイズだけを記録する。
+            console.log(`[WS] (${clientId}) received command type=${payload.type} payload_length=${rawText.length}`);
             const response = await deps.executeCommand(payload);
             span.setAttribute('ws.response_ok', response.ok);
             if (!response.ok) {

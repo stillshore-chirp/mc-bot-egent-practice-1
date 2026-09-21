@@ -192,7 +192,8 @@ export function createBotEventHandlers(deps: BotEventDependencies) {
 
     targetBot.on('chat', (username: string, message: string) => {
       if (username === targetBot.username) return;
-      console.info(`[Chat] <${username}> ${message}`);
+      // チャット本文やプレイヤー識別子を公開ログへ残さず、転送のみ行う。
+      console.info('[Chat] received message', { messageLength: message.length });
       void chatBridge.handleIncomingChat(targetBot, username, message);
     });
 
