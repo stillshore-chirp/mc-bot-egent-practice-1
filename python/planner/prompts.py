@@ -78,6 +78,9 @@ def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
 - 情報不足や危険要素がある場合は、曖昧な実行を避けて確認を優先してください。
 - `resp` には、プレイヤーへの短く丁寧な日本語説明を含めてください。
 - `goal_profile`、`constraints`、`react_trace` は推論根拠がある範囲で埋め、不要な推測は避けてください。
+- strict JSON schema のため、全フィールドを必ず返してください。未指定の optional 値は null、配列は空配列にします。
+- `arguments.coordinates` は x/y/z の各値が integer または null の object 形式です。
+- `arguments.notes`、`directives[].args`、`backlog[]` は JSON object を JSON 文字列として返します（例: text キーを含む JSON object の文字列）。
 """
 
 

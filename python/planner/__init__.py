@@ -28,6 +28,8 @@ from .graph import (
     BarrierNotificationTimeout,
     PlanArguments,
     PlanOut,
+    PlanOutWire,
+    PlanOutWireConversionError,
     PreActionReview,
     PlanPriorityManager,
     UnifiedPlanState,
@@ -40,6 +42,8 @@ from .graph import (
     _extract_output_text,
     extract_refusal_text,
     extract_structured_output,
+    parse_plan_out_wire,
+    wire_to_plan_out,
 )
 from planner_config import PlannerConfig, load_planner_config
 from utils import setup_logger
@@ -89,10 +93,11 @@ def _build_responses_payload(
     if schema_model is None:
         text_format: Dict[str, Any] = {"type": "json_object"}
     else:
+        effective_schema_model = PlanOutWire if schema_model is PlanOut else schema_model
         text_format = {
             "type": "json_schema",
             "name": schema_name or schema_model.__name__,
-            "schema": to_strict_json_schema(schema_model),
+            "schema": to_strict_json_schema(effective_schema_model),
             "strict": True,
         }
 
@@ -119,7 +124,7 @@ def _get_plan_graph() -> CompiledStateGraph:
                 system,
                 user,
                 _PLANNER_CONFIG,
-                schema_model=PlanOut,
+                schema_model=PlanOutWire,
                 schema_name="plan_out",
             ),
             review_payload_builder=lambda system, user: _build_responses_payload(
@@ -283,10 +288,14 @@ __all__ = [
     "openai",
     "PlanArguments",
     "PlanOut",
+    "PlanOutWire",
+    "PlanOutWireConversionError",
+    "parse_plan_out_wire",
     "ReActStep",
     "get_plan_priority",
     "reset_plan_priority",
     "compose_barrier_notification",
     "record_structured_step",
     "record_recovery_hints",
+    "wire_to_plan_out",
 ]

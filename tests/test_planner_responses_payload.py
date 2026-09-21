@@ -1,3 +1,4 @@
+import json
 import logging
 
 from planner import _build_responses_payload, compose_barrier_notification
@@ -472,15 +473,42 @@ async def test_plan_graph_legacy_normalize_coerces_top_level_clarification_enum(
 
 @pytest.mark.anyio
 async def test_plan_graph_prefers_structured_output_without_legacy_normalize() -> None:
+    structured_plan = {
+        "plan": ["丸石を10個掘る"],
+        "resp": "掘ります",
+        "intent": "mine",
+        "arguments": {
+            "coordinates": None,
+            "quantity": 10,
+            "target": "cobblestone",
+            "notes": json.dumps({"source": "structured"}),
+            "confidence": 0.9,
+            "clarification_needed": "none",
+            "detected_modalities": [],
+        },
+        "blocking": False,
+        "react_trace": [],
+        "confidence": 0.9,
+        "clarification_needed": "none",
+        "detected_modalities": [],
+        "backlog": [],
+        "next_action": "execute",
+        "goal_profile": {
+            "summary": "",
+            "category": "mine",
+            "priority": "medium",
+            "success_criteria": [],
+            "blockers": [],
+        },
+        "constraints": [],
+        "execution_hints": [],
+        "directives": [],
+        "recovery_hints": [],
+    }
     plan_out = await _invoke_graph_with_output(
         "not-json",
         response_attrs={
-            "output_parsed": {
-                "plan": ["丸石を10個掘る"],
-                "resp": "掘ります",
-                "intent": "mine",
-                "clarification_needed": "none",
-            }
+            "output_parsed": structured_plan,
         },
     )
     assert plan_out.plan == ["丸石を10個掘る"]
