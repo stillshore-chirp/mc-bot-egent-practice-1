@@ -24,29 +24,30 @@
 | ID | マイルストーン | 状態 | メモ |
 | --- | --- | --- | --- |
 | M1 | 実ログと最新mainを照合 | Done | 合流命令は到達。床条件停止と約30秒のtimeoutを区別 |
-| M2 | 安全な候補選択・固定値診断と回帰テスト | Pending | 危険・未観測では従来通り停止 |
-| M3 | Bot単体の反映と再観測 | Pending | ユーザーはBotのみ再起動を許可。world操作は別判断 |
-| M4 | commit・PR・latest HEAD CI・review | Pending | 既存Issue #184を参照 |
+| M2 | 安全な候補選択・固定値診断と回帰テスト | Done | Node 237 tests・build成功。反証レビューでP0/P1なし |
+| M3 | Bot単体の反映と再観測 | Blocked | Botのみ修正版で再起動し、4種のread-only状態取得に成功。ゲーム内の新しい呼びかけ待ち |
+| M4 | commit・PR・latest HEAD CI・review | Done | 実装commitのCI 3件成功、review/threadなし。計画更新commitもpush後に確認する |
 
 ## 5. 優先度付き小タスク
-- [ ] P0: 同じ高さの対象でも安全な1段上下候補を検査する回帰と実装。
-- [ ] P0: 液体・未知・2段差ではfail-closedを維持する。
-- [ ] P1: timeoutの発生源・停止処理を固定分類だけで診断する。
-- [ ] P1: Node test/build、公開安全性、実環境のread-only事前・事後観測を確認する。
-- [ ] P1: 最新HEADのCI・review・thread・mergeabilityを確認する。
+- [x] P0: 同じ高さの対象でも安全な1段上下候補を検査する回帰と実装。
+- [x] P0: 液体・未知・2段差ではfail-closedを維持する。
+- [x] P1: timeoutの発生源・停止処理を固定分類だけで診断する。
+- [x] P1: Node test/build、公開安全性、実環境のread-only事前・事後観測を確認する。
+- [x] P1: 実装commitのCI・review・thread・mergeabilityを確認する。計画更新commitもpush後に再確認する。
 
 ## 6. 受け入れ条件
-- [ ] 安全な同列1段候補では`goto`を開始でき、危険・未観測候補では開始しない。
-- [ ] timeout時の診断は発生源と停止処理を区別し、プレイヤーやworldの実値を含まない。
-- [ ] 公開エラー、チャット、既存の移動安全条件を維持する。
-- [ ] 実ゲーム再試行の結果を観測事実と未確認事項に分ける。
+- [x] 安全な同列1段候補では`goto`を開始でき、危険・未観測候補では開始しない（fake Bot回帰）。
+- [x] timeout時の診断は発生源と停止処理を区別し、プレイヤーやworldの実値を含まない。
+- [x] 公開エラー、チャット、既存の移動安全条件を維持する。
+- [ ] 実ゲーム再試行の結果を観測事実と未確認事項に分ける（ユーザーの新しい呼びかけ待ち）。
 
 ## 7. 検証コマンド
-- [ ] `bash scripts/run-node-bot.sh test`
-- [ ] `bash scripts/run-node-bot.sh build`
-- [ ] `git diff --check`
-- [ ] latest HEADのCIとPR review/thread確認
-- [ ] Bot接続・位置・周辺hazard・再呼びかけ結果のread-only確認
+- [x] `bash scripts/run-node-bot.sh test`（22 files / 237 tests）
+- [x] `bash scripts/run-node-bot.sh build`
+- [x] `git diff --check`
+- [x] 実装commitのCIとPR review/thread確認（3 checks成功、review/threadなし）
+- [x] Bot接続・位置・所持品・一般状態・周辺状態のread-only確認
+- [ ] 再呼びかけ結果のread-only確認（ユーザーの新しい呼びかけ待ち）
 
 ## 8. 基本スモークテスト
 - 手順: 修正前に失敗するfake Bot回帰を確認し、修正後に安全な1段候補だけ移動が始まることを確認する。実ゲームではBotのみ再起動してread-only状態を再観測し、ユーザーによる1回の呼びかけを照合する。
@@ -66,9 +67,10 @@
 
 ## 12. ステータスログ
 - 2026-09-21: PR #188はmainへマージ済み。実ゲームの合流命令はBotへ届くが、経由地点の床条件による即時停止と約30秒のtimeoutが残る。Botの接続と位置取得は確認済み。ユーザーは修正後のNode Bot単体再起動を許可。
+- 2026-09-21: 安全な同列上下候補、timeout発生源と停止処理の固定診断、回帰テストを実装。Node 237 testsとbuild、CI 3件成功。Node Botだけを修正版で再起動し、4種のread-only状態取得に成功。Paper/Pythonは稼働を維持。実ゲームでの新しい呼びかけは未観測。
 
 ## 13. 停止時の最終状態
-- 最終状態: In progress
-- 停止理由:
-- 再開条件:
-- 次の最短アクション: 安全な候補選択の回帰テストと実装を確認する。
+- 最終状態: Blocked
+- 停止理由: 修正版Botでの合流結果には、ユーザーによる安全な場所からの新しいゲーム内呼びかけが必要。
+- 再開条件: 同じディメンションの安全な地面から一度だけ `come here` を送信した旨をユーザーが知らせる。
+- 次の最短アクション: 新しい命令の固定分類ログとゲーム内応答を照合し、必要なら追加修正する。
