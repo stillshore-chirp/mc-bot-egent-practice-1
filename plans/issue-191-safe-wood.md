@@ -28,6 +28,8 @@ Issue: #191 / Branch: codex/safe-wood-collection / Base: bedbc99
 
 最終状態: Blocked（実ワールド受入）。成長/伐採/拾得/収納・表示は未確認。再開条件はPaper/Nodeの反映・再起動、担当者設定、専用試験木と収納先を使う実操作の承認。現行world・稼働サービスは変更していない。次の最短アクションは利用者と試験対象を確認して承認範囲で反映すること。
 
+検証中、既存server.testの3桁整数sentinelがランダム接続UUIDに一致して1件失敗した。ログ契約を緩めず、小数付きsentinelに変更して衝突を除去し、Node buildと264件の全テストを再実行して成功を確認した。
+
 ## UI/UX反証と検証範囲
 対象はMinecraftチャットのコマンド・状態通知。新しい画面layoutはない。初見導線は未登録通知→base登録→collect。反復時は登録を保存しcollectだけで開始できる。status/stop/returnを明示し、成功と部分収納・未到達を分離する。
 

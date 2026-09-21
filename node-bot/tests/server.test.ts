@@ -77,12 +77,14 @@ describe('command server command contract', () => {
   it('gatherStatusは完全な応答をwireへ送り、ログは固定値だけにする', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const sentinelName = 'SentinelPlayer';
+    // 整数3桁はランダムUUID/ポートと偶然一致する。小数付きの識別可能な座標を使う。
+    const sentinelPosition = { x: 731.125811, y: 811.375907, z: 907.625731 };
     const sentinelResponse: CommandResponse = {
       ok: false,
       error: 'raw-error-sentinel',
       data: {
         player: sentinelName,
-        position: { x: 731, y: 811, z: 907 },
+        position: sentinelPosition,
         inventory: [{ item: 'diamond-sentinel', count: 64 }],
         perception: 'raw-perception-sentinel',
       },
@@ -116,9 +118,7 @@ describe('command server command contract', () => {
       const serializedSpanStatus = JSON.stringify(telemetry.span.setStatus.mock.calls);
       expect(serializedSpanStatus).not.toContain('raw-error-sentinel');
       expect(serializedSpanStatus).not.toContain(sentinelName);
-      expect(serializedSpanStatus).not.toContain('731');
-      expect(serializedSpanStatus).not.toContain('811');
-      expect(serializedSpanStatus).not.toContain('907');
+      for (const value of Object.values(sentinelPosition)) expect(serializedSpanStatus).not.toContain(String(value));
       const sendLog = log.mock.calls.find(([message]) => message === '[WS] sending gatherStatus response');
       expect(sendLog).toEqual([
         '[WS] sending gatherStatus response',
@@ -126,9 +126,7 @@ describe('command server command contract', () => {
       ]);
       const serializedLogs = JSON.stringify(log.mock.calls);
       expect(serializedLogs).not.toContain(sentinelName);
-      expect(serializedLogs).not.toContain('731');
-      expect(serializedLogs).not.toContain('811');
-      expect(serializedLogs).not.toContain('907');
+      for (const value of Object.values(sentinelPosition)) expect(serializedLogs).not.toContain(String(value));
       expect(serializedLogs).not.toContain('diamond-sentinel');
       expect(serializedLogs).not.toContain('raw-perception-sentinel');
       expect(serializedLogs).not.toContain('raw-error-sentinel');
