@@ -12,7 +12,7 @@
 ## このディレクトリの前提
 
 - Node.js 22系、TypeScript、ESM、Vitestを前提とする。
-- repoの既定Minecraft versionは `1.21.1` で、Mineflayer側のprotocol解決は `runtime/config.ts` に集約している。
+- repoの既定Minecraft versionは `1.21.11` で、Mineflayer側のprotocol解決は `runtime/config.ts` に集約している。
 - `mineflayer`、`minecraft-data`、`minecraft-protocol` などはupstream更新の影響を受けやすいため、互換性を軽視した変更を避ける。
 
 ## 実装ルール

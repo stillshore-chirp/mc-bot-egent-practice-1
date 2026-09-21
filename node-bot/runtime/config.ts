@@ -1,6 +1,7 @@
 // 日本語コメント：Mineflayer 実行時の環境変数から一貫した設定オブジェクトを生成する
 // 役割：bot.ts の肥大化を防ぎ、テストで個別条件を検証しやすくする
 import minecraftData from 'minecraft-data';
+import minecraftProtocol from 'minecraft-protocol';
 
 import {
   AgentWebSocketResolution,
@@ -38,9 +39,12 @@ const defaultDependencies: ConfigDependencies = {
 };
 
 // Mineflayer と Paper サーバーの互換性を保つための既定バージョン。
-const DEFAULT_MC_VERSION = '1.21.1';
+const DEFAULT_MC_VERSION = '1.21.11';
+const PROTOCOL_VERSIONS = new Set(minecraftProtocol.supportedVersions);
 const SUPPORTED_MINECRAFT_VERSIONS = new Set(
-  minecraftData.versions.pc.map((version) => version.minecraftVersion),
+  minecraftData.versions.pc
+    .map((version) => version.minecraftVersion)
+    .filter((version) => PROTOCOL_VERSIONS.has(version)),
 );
 
 /**
@@ -55,7 +59,7 @@ export interface MinecraftVersionResolution {
 
 /**
  * Mineflayer が接続時に利用するプロトコルバージョンを決定する。
- * サーバーとの不整合で PartialReadError が発生しないよう、minecraft-data が認識するラベルへ正規化する。
+ * サーバーとの不整合で PartialReadError が発生しないよう、minecraft-data と minecraft-protocol がともに対応するラベルへ正規化する。
  */
 export function resolveMinecraftVersionLabel(requestedVersionRaw: string | undefined): MinecraftVersionResolution {
   const warnings: string[] = [];
@@ -70,7 +74,7 @@ export function resolveMinecraftVersionLabel(requestedVersionRaw: string | undef
     }
 
     warnings.push(
-      `環境変数 MC_VERSION が未設定ですが、既定プロトコル ${DEFAULT_MC_VERSION} が minecraft-data へ登録されていないため Mineflayer の自動判別に委ねます。`,
+      `環境変数 MC_VERSION が未設定ですが、既定プロトコル ${DEFAULT_MC_VERSION} が依存ライブラリの共通対応一覧にないため Mineflayer の自動判別に委ねます。`,
     );
     return { version: undefined, warnings };
   }
@@ -81,13 +85,13 @@ export function resolveMinecraftVersionLabel(requestedVersionRaw: string | undef
 
   if (SUPPORTED_MINECRAFT_VERSIONS.has(DEFAULT_MC_VERSION)) {
     warnings.push(
-      `MC_VERSION='${sanitized}' は minecraft-data の対応一覧に存在しないため ${DEFAULT_MC_VERSION} へフォールバックします。`,
+      `MC_VERSION='${sanitized}' は依存ライブラリの共通対応一覧に存在しないため ${DEFAULT_MC_VERSION} へフォールバックします。`,
     );
     return { version: DEFAULT_MC_VERSION, warnings };
   }
 
   warnings.push(
-    `MC_VERSION='${sanitized}' は minecraft-data の対応一覧に存在せず、既定プロトコル ${DEFAULT_MC_VERSION} も見つからないため Mineflayer の自動判別にフォールバックします。`,
+    `MC_VERSION='${sanitized}' は依存ライブラリの共通対応一覧に存在せず、既定プロトコル ${DEFAULT_MC_VERSION} も見つからないため Mineflayer の自動判別にフォールバックします。`,
   );
   return { version: undefined, warnings };
 }

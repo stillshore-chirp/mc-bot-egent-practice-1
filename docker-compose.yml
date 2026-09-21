@@ -7,7 +7,9 @@ services:
     environment:
       EULA: "TRUE"
       TYPE: "PAPER"
-      VERSION: ${MC_VERSION:-1.21.1}
+      VERSION: ${MC_VERSION:-1.21.11}
+      # 26.1系クライアントを1.21.11サーバーへ接続するための単一プラグイン。
+      MODRINTH_PROJECTS: viaversion:5.12.0
       ONLINE_MODE: "FALSE"
       ENABLE_RCON: "false"
       MEMORY: ${BRIDGE_JVM_MEMORY:-2G}
@@ -47,7 +49,7 @@ services:
       - .env
     environment:
       # Mineflayer が Paper と揃った既定バージョンで起動するよう docker-compose 側でもフォールバックを指定する。
-      MC_VERSION: ${MC_VERSION:-1.21.1}
+      MC_VERSION: ${MC_VERSION:-1.21.11}
       # host-paper モードの既定。paper モードでは docker-compose.paper.yml 側で bridge へ上書き。
       MC_HOST: ${COMPOSE_MC_HOST:-host.docker.internal}
       WS_HOST: ${WS_HOST:-0.0.0.0}
