@@ -12,6 +12,8 @@
 
 合流が `rendezvous_bot_unavailable` で停止した場合、Node は `RendezvousBotUnavailable` の固定診断を一度記録します。`phase` と `guard` で入口、実行開始、区間前、移動後、到着確認のどこで止まったかを区別し、`entityReady`、`positionReady`、`gotoStarted` は真偽値のみを残します。プレイヤー名、チャット本文、座標、raw entity、例外の内容を診断ログへ含めません。この診断は失敗箇所の特定用であり、Minecraft の接続状態や根本原因を単独で証明するものではありません。
 
+実環境の事前確認で用いる `gatherStatus` については、Node の WebSocket 送信ログとspanのエラーメッセージを成功可否と固定分類だけに制限します。通信相手へ返すステータス内容は維持します。呼び出し側が返答全体を別途ログへ書く場合はこの制限が及ばないため、実環境の診断クライアントでも返答を表示・記録する前に要約します。
+
 ## 1. 移動系機能の拡張ポイント
 
 - **設定集約レイヤー**: `node-bot/runtime/config.ts` と `node-bot/runtime/env.ts` は、移動関連の環境変数（`PATHFINDER_ALLOW_PARKOUR` や `MOVE_GOAL_TOLERANCE` など）を正規化する唯一の入口です。新しいトグルや閾値を導入する際はここに追加し、型定義とバリデーションをセットで行います。

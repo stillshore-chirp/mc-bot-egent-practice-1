@@ -16,7 +16,7 @@
 - ワールド変更、危険地形への強制移動、ログへのプレイヤー名・座標・チャット・raw例外の記録。
 
 ## 3. 対象範囲
-- Nodeの合流判定ログと回帰テスト、必要な設計記述。
+- Nodeの合流判定ログと回帰テスト、ステータス送信ログ・spanの最小化、必要な設計記述。
 - 元の稼働環境のread-only事前確認、許可されたBot更新・再起動、再観測。
 
 ## 4. マイルストーン
@@ -31,6 +31,7 @@
 - [x] P0: `rendezvous_bot_unavailable` の全分岐に固定phaseログを付ける。
 - [x] P0: 位置欠損・Bot欠損・移動中の欠損を回帰テストに固定する。
 - [x] P0: ログへ機微情報を出さず、既存の安全停止を維持する。
+- [x] P1: ステータス応答のNode送信ログ・spanを固定値化し、wire応答を維持する。
 - [ ] P1: Nodeテスト・ビルド、公開安全性、PR・CI・reviewを確認する。
 - [ ] P1: 稼働環境を再観測後、Botだけを安全に更新・再起動し結果を確認する。
 
@@ -41,7 +42,7 @@
 - [ ] ローカルBotの実コードと接続状態を確認し、再試行の結果と未確認範囲を記録する。
 
 ## 7. 検証コマンド
-- [x] `bash scripts/run-node-bot.sh test`（22 files / 228 tests passed）
+- [x] `bash scripts/run-node-bot.sh test`（22 files / 230 tests passed）
 - [x] `bash scripts/run-node-bot.sh build`
 - [x] `git diff --check`
 - [ ] latest HEADのCI・review・thread・mergeability確認
@@ -66,6 +67,7 @@
 ## 12. ステータスログ
 - 2026-09-21: 固定エラー応答とMinecraft接続の同時観測を分離。Issue #184に診断範囲を記録し、最新mainから隔離worktreeを作成。
 - 2026-09-21: 5分岐の固定診断と非漏洩回帰を追加。Node 22 files / 228 tests、build、diff checkを確認。反証レビューでP0/P1なし。実環境の原因は未確定。
+- 2026-09-21: 実ステータス照会前にNodeのgatherStatus送信ログが完全な応答を記録し得ると判明。ログ・spanを固定値化し、wire応答を維持する回帰を追加。Node 22 files / 230 tests、build、diff checkを確認。Python側など別の呼び出し元は返答を別途ログへ書き得るため、実運用ではNodeへの直接照会を要約表示する。
 
 ## 13. 停止時の最終状態
 - 最終状態: In progress

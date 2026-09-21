@@ -12,7 +12,7 @@ import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 import {
   AgentRoleDescriptor,
 } from './runtime/roles.js';
-import { startCommandServer } from './runtime/server.js';
+import { startCommandServer, summarizeGatherStatusResponse } from './runtime/server.js';
 import { runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
 import { NavigationController } from './runtime/navigationController.js';
 import { PlayerPositionBridgeClient } from './runtime/playerPositionBridge.js';
@@ -322,7 +322,10 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
 
         if (!response.ok) {
           outcome = 'failure';
-          span.setStatus({ code: SpanStatusCode.ERROR, message: response.error ?? 'command returned ok=false' });
+          const errorMessage = type === 'gatherStatus'
+            ? summarizeGatherStatusResponse(response).errorClass
+            : response.error ?? 'command returned ok=false';
+          span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
         }
         if (directiveMeta) {
           const directiveId =

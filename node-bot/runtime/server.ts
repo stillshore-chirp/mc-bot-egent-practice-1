@@ -75,6 +75,16 @@ function parseCommand(raw: RawData): CommandPayload | null {
   }
 }
 
+export function summarizeGatherStatusResponse(response: CommandResponse): {
+  ok: boolean;
+  errorClass: 'none' | 'command_error';
+} {
+  return {
+    ok: response.ok,
+    errorClass: response.ok ? 'none' : 'command_error',
+  };
+}
+
 /**
  * WebSocket 経由で受信したコマンドを処理するサーバーを起動する。
  *
@@ -118,9 +128,16 @@ export function startCommandServer(
             const response = await deps.executeCommand(payload);
             span.setAttribute('ws.response_ok', response.ok);
             if (!response.ok) {
-              span.setStatus({ code: SpanStatusCode.ERROR, message: response.error ?? 'WS command failed' });
+              const errorMessage = payload.type === 'gatherStatus'
+                ? summarizeGatherStatusResponse(response).errorClass
+                : response.error ?? 'WS command failed';
+              span.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
             }
-            console.log(`[WS] (${clientId}) sending response: ${JSON.stringify(response)}`);
+            if (payload.type === 'gatherStatus') {
+              console.log('[WS] sending gatherStatus response', summarizeGatherStatusResponse(response));
+            } else {
+              console.log(`[WS] (${clientId}) sending response: ${JSON.stringify(response)}`);
+            }
             ws.send(JSON.stringify(response));
           },
         );
