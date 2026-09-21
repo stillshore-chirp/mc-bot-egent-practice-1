@@ -104,7 +104,13 @@ class StatusService:
         recovery_hints = self.memory.get("recovery_hints")
         if isinstance(recovery_hints, list) and recovery_hints:
             snapshot["recovery_hints"] = recovery_hints
-        self.logger.info("context snapshot built=%s", snapshot)
+        log_snapshot = dict(snapshot)
+        if isinstance(log_snapshot.get("last_chat"), dict):
+            log_snapshot["last_chat"] = {
+                "category": "chat_record",
+                "field_count": len(log_snapshot["last_chat"]),
+            }
+        self.logger.info("context snapshot built=%s", log_snapshot)
         return snapshot
 
     def collect_recent_mineflayer_context(

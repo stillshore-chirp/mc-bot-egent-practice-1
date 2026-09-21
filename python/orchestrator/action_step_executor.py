@@ -29,6 +29,7 @@ class ActionStepResult:
     last_target_coords: Optional[Tuple[int, int, int]] = None
     failure_reason: Optional[str] = None
     should_halt: bool = False
+    terminal_failure: bool = False
     emit_log: bool = True
 
 
@@ -107,13 +108,18 @@ class ActionStepExecutor:
 
         if handled:
             if action_category in ("move", "move_to_player"):
-                destination = updated_target or self._default_move_target
-                if destination:
-                    observation_text = (
-                        f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
-                    )
+                if action_category == "move_to_player":
+                    # followPlayer は座標をユーザーへ露出しない契約。到着結果は
+                    # move 一般の座標観測ログとも分離する。
+                    observation_text = "合流しました。"
                 else:
-                    observation_text = "移動に成功しました。"
+                    destination = updated_target or self._default_move_target
+                    if destination:
+                        observation_text = (
+                            f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
+                        )
+                    else:
+                        observation_text = "移動に成功しました。"
             else:
                 observation_text = f"{action_category} タスクを完了しました。"
             return ActionStepResult(
@@ -122,7 +128,10 @@ class ActionStepExecutor:
                 status="completed",
                 event_level="progress",
                 last_target_coords=updated_target,
-                should_halt=action_category == "move_to_player",
+                # move_to_player の成功は計画停止ではなく完了。should_halt は
+                # PlanExecutor では失敗回復へ入る信号として扱われるため、
+                # 成功時に立てると同じ指示を再計画してしまう。
+                should_halt=False,
             )
 
         observation_text = (
@@ -138,7 +147,10 @@ class ActionStepExecutor:
             last_target_coords=updated_target,
             failure_reason=failure_detail
             or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。",
-            should_halt=True,
+            # move_to_player は handle_move が安全な結果通知を既に1回送る。
+            # RecoveryCoordinatorへ渡すと同じ障壁の再通知と自動replanが起きる。
+            should_halt=action_category != "move_to_player",
+            terminal_failure=action_category == "move_to_player",
         )
 
     async def _handle_status_report(

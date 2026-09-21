@@ -77,12 +77,25 @@ class Memory:
 
     def get(self, key: str, default=None):
         value = self.kv.get(key, default)
-        self.logger.debug("memory get key=%s value=%s", key, value)
+        self.logger.debug("memory get key=%s value=%s", key, self._safe_log_value(key, value))
         return value
 
     def set(self, key: str, value):
-        self.logger.info("memory set key=%s value=%s", key, value)
+        self.logger.info("memory set key=%s value=%s", key, self._safe_log_value(key, value))
         self.kv[key] = value
+
+    @staticmethod
+    def _safe_log_value(key: str, value: Any) -> Any:
+        """話者名・チャット本文をログへ出さず、分類と件数だけ残す。"""
+
+        if key == "last_requester":
+            return {"category": "chat_speaker", "present": bool(value)}
+        if key == "_active_chat_message":
+            return {"category": "chat_source", "present": bool(value)}
+        if key == "last_chat":
+            fields = len(value) if isinstance(value, dict) else 0
+            return {"category": "chat_record", "field_count": fields}
+        return value
 
     # ------------------------------------------------------------------
     # Reflexion ログ関連の操作

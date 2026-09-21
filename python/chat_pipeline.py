@@ -6,9 +6,16 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from planner import plan
+from orchestrator.action_analyzer import (
+    is_move_to_player_command,
+    is_move_to_player_source_excluded,
+)
+from planner import PlanOut, plan
 from runtime.action_graph import ChatTask
 from runtime.rules import ACTION_TASK_RULES, ORE_PICKAXE_REQUIREMENTS, PICKAXE_TIER_BY_NAME
+
+
+_MOVE_TO_PLAYER_ACK = "呼びかけを受けました。合流できるか確認します。"
 
 if TYPE_CHECKING:  # pragma: no cover - 型チェック専用の依存
     from agent import AgentOrchestrator
@@ -24,35 +31,78 @@ class ChatPipeline:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
         agent = self._agent
+        deterministic_move_to_player = is_move_to_player_command(task.message)
+        source_excluded_move_to_player = is_move_to_player_source_excluded(task.message)
         agent.memory.set("last_requester", task.username)
         failures = await agent.status_service.prime_status_for_planning()
         if failures:
+            if deterministic_move_to_player:
+                # 合流は安全観測なしに開始しない。通常プランの既存障壁通知は
+                # 維持し、明確な呼び寄せだけ固定の一意な結果へまとめる。
+                await agent.actions.say(
+                    "周囲の状態を確認できないため、安全に合流できません。接続状況を確認してから、もう一度呼びかけてください。"
+                )
+                agent.memory.set("last_chat", {"username": task.username, "message": task.message})
+                return
             await agent.movement_service.report_execution_barrier(
                 "状態取得",
                 f"{', '.join(failures)} の取得に失敗しました。Mineflayer への接続状況を確認してください。",
             )
+        if deterministic_move_to_player:
+            # 行動計画や重い周辺観測を待たせず、受理状態だけを先に一度通知する。
+            await agent.actions.say(_MOVE_TO_PLAYER_ACK)
         await agent._collect_block_evaluations()
         context = agent.status_service.build_context_snapshot(
             current_role_id=agent.role_perception.current_role
         )
-        agent.logger.info(
-            "creating plan for username=%s message='%s' context=%s",
-            task.username,
-            task.message,
-            context,
-        )
+        if deterministic_move_to_player:
+            agent.logger.info("deterministic route=move_to_player")
+        elif source_excluded_move_to_player:
+            agent.logger.info("deterministic route=blocked_source")
+        else:
+            agent.logger.info(
+                "creating plan for username=%s message='%s' context=%s",
+                task.username,
+                task.message,
+                context,
+            )
 
         user_hint_coords = agent._extract_coordinates(task.message)
         if user_hint_coords:
             agent.logger.info("user message provided coordinates=%s", user_hint_coords)
 
-        plan_out = await plan(task.message, context)
-        agent.logger.info(
-            "plan generated steps=%d plan=%s resp=%s",
-            len(plan_out.plan),
-            plan_out.plan,
-            plan_out.resp,
-        )
+        if deterministic_move_to_player:
+            # 明確な呼び寄せは、座標を要求する LLM 確認へ流さず、チャット
+            # 送信者を target_player として ActionGraph の followPlayer へ渡す。
+            plan_out = PlanOut(
+                # 元チャット本文をPlanExecutor/ReActログへ渡さない固定step。
+                plan=["話者に合流する"],
+                intent="move_to_player",
+                goal_profile={
+                    "summary": "発話したプレイヤーのもとへ移動",
+                    "category": "move_to_player",
+                },
+            )
+        else:
+            plan_out = await plan(task.message, context)
+        if source_excluded_move_to_player and plan_out.intent == "move_to_player":
+            # 伝言・否定をLLMがcome hereへ言い換えても、原文とrespを
+            # ActionGraph/ReActログへ渡さず、固定stepの安全拒否へ収束させる。
+            plan_out.plan = ["話者に合流する"]
+            plan_out.resp = ""
+        if deterministic_move_to_player or source_excluded_move_to_player:
+            agent.logger.info(
+                "plan generated route=%s steps=%d",
+                "move_to_player" if deterministic_move_to_player else "blocked_source",
+                len(plan_out.plan),
+            )
+        else:
+            agent.logger.info(
+                "plan generated steps=%d plan=%s resp=%s",
+                len(plan_out.plan),
+                plan_out.plan,
+                plan_out.resp,
+            )
         agent._record_plan_summary(plan_out)
 
         if await agent.minedojo_handler.maybe_trigger_autorecovery(plan_out):
@@ -64,15 +114,36 @@ class ChatPipeline:
             agent.logger.info("plan arguments provided coordinates=%s", structured_coords)
         initial_target = structured_coords or user_hint_coords
 
-        if plan_out.resp:
-            agent.logger.info(
-                "relaying llm response to player username=%s resp='%s'",
-                task.username,
-                plan_out.resp,
-            )
+        # 確認・質問へ遷移するプランは PlanExecutor が唯一の送信責務を持つ。
+        # ここでも送ると同じ resp が二重にチャットへ出力される。
+        should_relay_initial_response = bool(plan_out.resp) and not (
+            plan_out.blocking
+            or plan_out.clarification_needed != "none"
+            or plan_out.next_action == "chat"
+        )
+        if (
+            should_relay_initial_response
+            and source_excluded_move_to_player
+            and plan_out.intent == "move_to_player"
+        ):
+            # 元発話を後段が安全拒否する経路では、LLMの初期respを重ねない。
+            should_relay_initial_response = False
+        if should_relay_initial_response:
+            if source_excluded_move_to_player:
+                agent.logger.info("relaying response route=blocked_source")
+            else:
+                agent.logger.info(
+                    "relaying llm response to player username=%s resp='%s'",
+                    task.username,
+                    plan_out.resp,
+                )
             await agent.actions.say(plan_out.resp)
 
-        await agent._execute_plan(plan_out, initial_target=initial_target)
+        agent.memory.set("_active_chat_message", task.message)
+        try:
+            await agent._execute_plan(plan_out, initial_target=initial_target)
+        finally:
+            agent.memory.set("_active_chat_message", None)
         agent.memory.set("last_chat", {"username": task.username, "message": task.message})
 
     async def handle_action_task(

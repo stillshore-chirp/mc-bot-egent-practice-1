@@ -9,6 +9,7 @@ import {
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
   resolveMovementConfig,
+  resolvePlayerPositionBridgeConfig,
   resolveVptPlaybackConfig,
   type DockerDetectionDeps,
 } from '../runtime/env.js';
@@ -256,6 +257,43 @@ describe('resolveAgentWebSocketEndpoint', () => {
     expect(result.batchMaxSize).toBe(1);
     expect(result.queueMaxSize).toBe(10);
     expect(result.warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe('resolvePlayerPositionBridgeConfig', () => {
+  it('未設定時は認証なしで無効化し、接続先は固定既定値を返す', () => {
+    const result = resolvePlayerPositionBridgeConfig(undefined, undefined);
+
+    expect(result).toMatchObject({
+      baseUrl: 'http://127.0.0.1:19071',
+      enabled: false,
+      timeoutMs: 1_500,
+      maxObservationAgeMs: 10_000,
+    });
+    expect(result.warnings).toContain('BRIDGE_API_KEY が未設定のため Paper Bridge のプレイヤー位置照会を無効化します。');
+  });
+
+  it('数値全体一致と上限を検証し、warningへ環境値を再掲しない', () => {
+    const result = resolvePlayerPositionBridgeConfig(
+      'http://bridge.test/',
+      'key',
+      '12junk',
+      '999999',
+    );
+
+    expect(result.baseUrl).toBe('http://bridge.test');
+    expect(result.enabled).toBe(true);
+    expect(result.timeoutMs).toBe(1_500);
+    expect(result.maxObservationAgeMs).toBe(10_000);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings.every((warning) => !warning.includes('12junk') && !warning.includes('999999'))).toBe(true);
+  });
+
+  it('認証情報付きや非HTTP URLを既定値へ戻し、入力値をwarningへ再掲しない', () => {
+    const result = resolvePlayerPositionBridgeConfig('file:///tmp/private', 'key');
+
+    expect(result.baseUrl).toBe('http://127.0.0.1:19071');
+    expect(result.warnings.some((warning) => warning.includes('file:///tmp/private'))).toBe(false);
   });
 });
 

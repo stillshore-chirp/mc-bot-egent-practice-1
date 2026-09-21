@@ -15,6 +15,7 @@ import {
 import { startCommandServer } from './runtime/server.js';
 import { runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
 import { NavigationController } from './runtime/navigationController.js';
+import { PlayerPositionBridgeClient } from './runtime/playerPositionBridge.js';
 import { createEquipItemCommandHandler } from './runtime/commands/equipItemCommand.js';
 import { createSkillCommandHandlers } from './runtime/commands/skillCommands.js';
 import { createStatusCommandHandlers } from './runtime/commands/statusCommands.js';
@@ -52,6 +53,7 @@ const {
   movement,
   skills,
   perception,
+  playerPositionBridge,
 } = configValues;
 const {
   tracer,
@@ -86,6 +88,12 @@ const navigationController = new NavigationController({
   forcedMoveRetryWindowMs: forcedMove.retryWindowMs,
   forcedMoveMaxRetries: forcedMove.maxRetries,
   forcedMoveRetryDelayMs: forcedMove.retryDelayMs,
+  playerPositionBridge: new PlayerPositionBridgeClient({
+    baseUrl: playerPositionBridge.baseUrl,
+    apiKey: playerPositionBridge.apiKey,
+    timeoutMs: playerPositionBridge.timeoutMs,
+    maxObservationAgeMs: playerPositionBridge.maxObservationAgeMs,
+  }),
   pathfinder: {
     allowParkour: pathfinderMovement.allowParkour,
     allowSprinting: pathfinderMovement.allowSprinting,
@@ -201,6 +209,7 @@ const {
 const {
   handleChatCommand,
   handleMoveToCommand,
+  handleFollowPlayerCommand,
   handleMineOreCommand,
   handleSetAgentRoleCommand,
 } = createCoreCommandHandlers({
@@ -273,6 +282,9 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
           case 'moveTo':
             response = await handleMoveToCommand(args);
             break;
+          case 'followPlayer':
+            response = await handleFollowPlayerCommand(args);
+            break;
           case 'equipItem':
             response = await handleEquipItemCommand(args);
             break;
@@ -344,4 +356,3 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
     },
   );
 }
-

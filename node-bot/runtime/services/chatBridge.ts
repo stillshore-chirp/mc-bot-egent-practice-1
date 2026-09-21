@@ -106,7 +106,7 @@ export class ChatBridge {
     const formatted = `現在位置は X=${Math.floor(x)} / Y=${Math.floor(y)} / Z=${Math.floor(z)} です。`;
     const delivered = this.chatMessenger.sendChat(formatted);
     if (delivered) {
-      this.logger('info', '[Chat] reported current position', { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) });
+      this.logger('info', '[Chat] reported current position');
     } else {
       this.logger('warn', '[Chat] failed to report current position because chat messenger was unavailable');
     }

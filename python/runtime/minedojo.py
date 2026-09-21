@@ -143,7 +143,7 @@ async def run_minedojo_self_dialogue(
 
     cfg = config or load_agent_config().config
     bridge = BotBridge(cfg.ws_url)
-    actions = Actions(bridge)
+    actions = Actions(bridge, worker_task_timeout_seconds=cfg.worker_task_timeout_seconds)
     seed_path = Path(__file__).resolve().parent.parent / "skills" / "seed_library.json"
     skill_repo = SkillRepository(
         cfg.skill_library_path,

@@ -12,10 +12,12 @@ class RecordingBridge:
 
     def __init__(self, response: Dict[str, Any] | None = None) -> None:
         self.sent: List[Dict[str, Any]] = []
+        self.send_kwargs: List[Dict[str, Any]] = []
         self.response = response or {"ok": True, "marker": "test"}
 
     async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:  # noqa: D401 - テスト用スタブ
         self.sent.append(payload)
+        self.send_kwargs.append(dict(_))
         return self.response | {"echo": payload}
 
 class ScriptedBridge(RecordingBridge):
@@ -27,6 +29,7 @@ class ScriptedBridge(RecordingBridge):
 
     async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:
         self.sent.append(payload)
+        self.send_kwargs.append(dict(_))
         if self._responses:
             response = self._responses.pop(0)
         else:
@@ -74,6 +77,53 @@ async def test_follow_player_payload() -> None:
         "type": "followPlayer",
         "args": {"target": "Taishi", "stopDistance": 4, "maintainLineOfSight": False},
     }
+
+
+@pytest.mark.anyio
+async def test_follow_player_uses_long_recv_timeout_without_give_up_callback() -> None:
+    bridge = RecordingBridge()
+    give_up_called = False
+
+    async def on_give_up(_: int, __: str) -> None:
+        nonlocal give_up_called
+        give_up_called = True
+
+    actions = Actions(bridge, on_bridge_give_up=on_give_up)
+
+    await actions.follow_player("Taishi")
+
+    assert bridge.sent[-1]["type"] == "followPlayer"
+    assert bridge.send_kwargs[-1]["recv_timeout"] == 210.0
+    assert bridge.send_kwargs[-1]["on_give_up"] is None
+    assert bridge.send_kwargs[-1]["on_retry"] is None
+    assert give_up_called is False
+
+
+@pytest.mark.anyio
+async def test_follow_player_fails_closed_when_worker_timeout_is_too_short() -> None:
+    bridge = RecordingBridge()
+    actions = Actions(bridge, worker_task_timeout_seconds=239.0)
+
+    result = await actions.follow_player("Taishi")
+
+    assert result == {"ok": False, "error": "rendezvous_worker_timeout_mismatch"}
+    assert bridge.sent == []
+
+
+@pytest.mark.anyio
+async def test_follow_player_logs_hide_target_payload_and_raw_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bridge = RecordingBridge(response={"ok": False, "error": "rendezvous_busy", "message": "raw"})
+    actions = Actions(bridge)
+
+    with caplog.at_level(logging.INFO, logger="actions"):
+        await actions.follow_player("SecretTarget")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert all("SecretTarget" not in message for message in messages)
+    assert all('"target"' not in message for message in messages)
+    assert all("raw" not in message for message in messages)
 
 @pytest.mark.anyio
 async def test_attack_entity_mode_validation() -> None:

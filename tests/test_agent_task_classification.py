@@ -9,6 +9,10 @@ import pytest
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
+from orchestrator.action_analyzer import (  # type: ignore  # noqa: E402
+    is_move_to_player_command,
+    is_move_to_player_source_excluded,
+)
 from runtime.rules import ACTION_TASK_RULES  # type: ignore  # noqa: E402
 
 @dataclass
@@ -73,3 +77,86 @@ def test_classification_handles_punctuated_text(
     text = "目的地へ移動して、鉱石を掘る"
     assert legacy_classify(orchestrator, text) == "move"
     assert orchestrator.task_router.classify_action_task(text) == "move"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "come here",
+        "Come  Here!",
+        "ここに来て",
+        "こっちに来てください",
+    ),
+)
+def test_explicit_rendezvous_commands_are_detected_without_coordinates(
+    orchestrator: AgentOrchestrator, text: str
+) -> None:
+    """明確な呼び寄せは座標要求へ流さず話者追従として扱う。"""
+
+    assert is_move_to_player_command(text)
+    assert orchestrator.task_router.classify_action_task(text) == "move_to_player"
+
+
+def test_ambiguous_move_command_is_not_forced_to_player() -> None:
+    """曖昧な移動指示は既存 planner の判断を残す。"""
+
+    assert not is_move_to_player_command("近くへ移動して")
+    assert not is_move_to_player_command("don't come here")
+    assert not is_move_to_player_command("ここに来ないで")
+    assert not is_move_to_player_command("ここに来てほしくない")
+    assert not is_move_to_player_command("Aさんのところへ行って")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "tell Alex to come here",
+        "ask Alex to come here",
+        "誰かに「こっちに来て」と伝えて",
+        "Alexさんにここに来てと言って",
+    ),
+)
+def test_relayed_or_quoted_rendezvous_is_not_routed_to_speaker(text: str) -> None:
+    """第三者への伝言・引用文は話者自身への呼び寄せにしない。"""
+
+    assert not is_move_to_player_command(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "tell Alex to come here",
+        "誰かに「こっちに来て」と伝えて",
+        "ここに来ないで",
+        "don't come here",
+    ),
+)
+def test_late_action_classification_preserves_relay_and_negative_exclusions(
+    orchestrator: AgentOrchestrator, text: str
+) -> None:
+    """後段の既存分類でも伝言・否定をmove_to_playerへ戻さない。"""
+
+    assert orchestrator.task_router.classify_action_task(text) != "move_to_player"
+
+
+@pytest.mark.parametrize("text", ("come here", "こっちに来て", "ここに来てください"))
+def test_late_action_classification_keeps_direct_rendezvous(
+    orchestrator: AgentOrchestrator, text: str
+) -> None:
+    assert orchestrator.task_router.classify_action_task(text) == "move_to_player"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "tell Alex to come here",
+        "誰かに「こっちに来て」と伝えて",
+        "ここに来てほしくない",
+    ),
+)
+def test_original_chat_source_is_excluded_after_llm_rephrasing(text: str) -> None:
+    assert is_move_to_player_source_excluded(text)
+
+
+def test_direct_follow_me_is_not_source_excluded() -> None:
+    assert not is_move_to_player_source_excluded("follow me")

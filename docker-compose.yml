@@ -59,6 +59,9 @@ services:
       OTEL_TRACES_SAMPLER_RATIO: ${OTEL_TRACES_SAMPLER_RATIO:-1.0}
       AGENT_BRIDGE_LOG_LEVEL: ${AGENT_BRIDGE_LOG_LEVEL:-warn}
       AGENT_LOG_LEVEL: ${AGENT_LOG_LEVEL:-warn}
+      # 合流対象の位置をPaper/AgentBridgeへ問い合わせるための内部HTTP接続。
+      BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://host.docker.internal:19071}
+      BRIDGE_API_KEY: ${BRIDGE_API_KEY:-}
     command: ["bash", "-lc", "npm ci && npm run dev"]
     ports:
       - "8765:8765"

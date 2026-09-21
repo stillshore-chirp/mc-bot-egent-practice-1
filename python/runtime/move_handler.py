@@ -4,8 +4,64 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
+
 if TYPE_CHECKING:
     from agent import AgentOrchestrator
+
+
+_RENDEZVOUS_USER_MESSAGES = {
+    "rendezvous_invalid_args": "合流指示の対象を確認できません。対象プレイヤー名を確認して、もう一度呼びかけてください。",
+    "rendezvous_worker_timeout_mismatch": "合流処理の実行時間設定が短いため、安全に開始できません。設定を確認してから、もう一度呼びかけてください。",
+    "rendezvous_busy": "別の合流処理が進行中のため、今回は合流を開始できません。処理が終わってから、もう一度呼びかけてください。",
+    "rendezvous_bot_unavailable": "Botが接続されていないため、合流を開始できません。接続を確認して、もう一度呼びかけてください。",
+    "rendezvous_target_invalid": "対象プレイヤーを確認できないため、合流を開始できません。プレイヤー名を確認してください。",
+    "rendezvous_target_unavailable": "対象プレイヤーを確認できないため、合流を開始できません。対象が同じワールドにいるか確認してください。",
+    "rendezvous_target_offline": "対象プレイヤーが現在オンラインでないため、合流できません。対象が参加してから、もう一度呼びかけてください。",
+    "rendezvous_position_service_unavailable": "対象プレイヤーの位置情報を取得できないため、安全な移動を開始できません。しばらく待ってから、もう一度呼びかけてください。",
+    "rendezvous_dimension_unknown": "対象プレイヤーのワールドを確認できないため、安全のため移動を停止しました。",
+    "rendezvous_dimension_mismatch": "対象プレイヤーと同じワールドにいないため、合流できません。",
+    "rendezvous_observation_unavailable": "周辺の安全情報を取得できないため、安全を確認できず移動を停止しました。しばらく待ってから、もう一度呼びかけてください。",
+    "rendezvous_hazard_blocked": "安全な経路を確保できないため、移動を停止しました。対象の近くで再度呼びかけてください。",
+    "rendezvous_no_path": "対象まで安全な経路を見つけられませんでした。対象の近くで再度呼びかけてください。",
+    "rendezvous_timeout": "合流処理が時間内に完了しませんでした。対象の近くで再度呼びかけてください。",
+    "rendezvous_target_moved": "対象が移動したため、合流を完了できませんでした。対象の近くで再度呼びかけてください。",
+    "rendezvous_arrival_unconfirmed": "合流先への到着を確認できませんでした。対象の近くで再度呼びかけてください。",
+    "rendezvous_distance_limit": "対象までの距離が安全な上限を超えているため、合流を完了できませんでした。対象の近くで再度呼びかけてください。",
+    "rendezvous_path_failed": "対象まで安全に移動できませんでした。周囲を確認して、もう一度呼びかけてください。",
+    "rendezvous_line_of_sight_unsupported": "対象の視線確認を利用できないため、今回は移動を開始しません。Bot設定を確認してから、もう一度呼びかけてください。",
+}
+_RENDEZVOUS_UNCONFIRMED_MESSAGE = (
+    "合流結果を確認できません。Botの接続・動作状況を確認してから、もう一度呼びかけてください。"
+)
+for _transport_error in (
+    "recv_timeout",
+    "recv_error",
+    "recv_os_error",
+    "connect_timeout",
+    "connect_refused",
+    "connect_error",
+    "connect_os_error",
+    "send_timeout",
+    "send_error",
+    "send_os_error",
+):
+    _RENDEZVOUS_USER_MESSAGES[_transport_error] = _RENDEZVOUS_UNCONFIRMED_MESSAGE
+_DEFAULT_RENDEZVOUS_FAILURE_MESSAGE = (
+    "対象プレイヤーへの合流に失敗しました。対象が同じワールドにいるか確認して、もう一度呼びかけてください。"
+)
+
+
+def _safe_rendezvous_failure(response: Any) -> str:
+    """Node の固定error codeだけを利用し、raw errorをチャットへ出さない。"""
+
+    if isinstance(response, dict):
+        for key in ("errorCode", "code", "error"):
+            value = response.get(key)
+            if isinstance(value, str):
+                message = _RENDEZVOUS_USER_MESSAGES.get(value.strip())
+                if message:
+                    return message
+    return _DEFAULT_RENDEZVOUS_FAILURE_MESSAGE
 
 
 async def handle_move(
@@ -30,9 +86,8 @@ async def handle_move(
             if isinstance(fallback_player, str):
                 target_player = fallback_player.strip()
         if not target_player:
-            await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
-                step,
-                "チャット送信者を特定できず、追従先を決定できませんでした。もう一度呼びかけてください。",
+            await orchestrator.actions.say(  # type: ignore[attr-defined]
+                "チャット送信者を特定できず、追従先を決定できませんでした。もう一度呼びかけてください。"
             )
             return {
                 "handled": False,
@@ -51,22 +106,29 @@ async def handle_move(
 
     # move_to_player はプレイヤー名が分かれば追従コマンドを優先する。
     if category == "move_to_player" and target_player:
+        # action_analyzer は runtime.rules 経由で本モジュールを参照するため、
+        # 循環importを避けて実行時に解決する。
+        from orchestrator.action_analyzer import is_move_to_player_source_excluded
+
+        memory = getattr(orchestrator, "memory", None)
+        active_chat_message = memory.get("_active_chat_message") if memory else None
+        if isinstance(active_chat_message, str) and is_move_to_player_source_excluded(
+            active_chat_message
+        ):
+            blocked_message = (
+                "別のプレイヤーへの伝言または来訪を望まない発話として解釈されたため、合流を開始しません。"
+                "直接呼びかける場合は「ここに来て」と送ってください。"
+            )
+            await orchestrator.actions.say(blocked_message)  # type: ignore[attr-defined]
+            return {
+                "handled": False,
+                "updated_target": last_target,
+                "failure_detail": blocked_message,
+            }
         follow_resp = await orchestrator.actions.follow_player(target_player)  # type: ignore[attr-defined]
-        if follow_resp.get("ok"):
-            pos_detail = orchestrator.memory.get("player_pos_detail")  # type: ignore[attr-defined]
-            position = None
-            if isinstance(pos_detail, dict):
-                position = pos_detail.get("position") or pos_detail
-            arrived = ""
-            if isinstance(position, dict):
-                x = position.get("x")
-                y = position.get("y")
-                z = position.get("z")
-                dimension = position.get("dimension") or "unknown"
-                if all(isinstance(v, (int, float)) for v in (x, y, z)):
-                    arrived = f" 現在位置 X={int(x)} / Y={int(y)} / Z={int(z)}（{dimension}）"
+        if isinstance(follow_resp, dict) and follow_resp.get("ok"):
             await orchestrator.actions.say(  # type: ignore[attr-defined]
-                f"{target_player} さんに合流しました。{arrived}".strip()
+                f"{target_player} さんに合流しました。"
             )
             return {
                 "handled": True,
@@ -74,8 +136,10 @@ async def handle_move(
                 "failure_detail": None,
             }
 
-        error_detail = follow_resp.get("error") or "プレイヤー追従に失敗しました"
-        await orchestrator.movement_service.report_execution_barrier(step, error_detail)  # type: ignore[attr-defined]
+        error_detail = _safe_rendezvous_failure(follow_resp)
+        # Nodeの固定enumを安全文言へ変換済み。barrier報告は別のLLM通知を
+        # 生成して二重送信や自動replanを招くため、ここでは結果を一度だけ送る。
+        await orchestrator.actions.say(error_detail)  # type: ignore[attr-defined]
         return {
             "handled": False,
             "updated_target": last_target,

@@ -33,6 +33,7 @@ class UnifiedPlanState(TypedDict, total=False):
     step: str
     last_target_coords: Optional[Tuple[int, int, int]]
     explicit_coords: Optional[Tuple[int, int, int]]
+    target_player: Optional[str]
     backlog: List[Dict[str, str]]
     next_action: str
     confirmation_required: bool
@@ -68,6 +69,9 @@ def _serialize_for_log(data: Mapping[str, Any]) -> Dict[str, Any]:
 
     safe: Dict[str, Any] = {}
     for key, value in data.items():
+        if key in {"target_player", "username", "user_msg", "message", "resp"}:
+            safe[f"{key}_present"] = bool(value)
+            continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             safe[key] = value
         elif isinstance(value, (list, tuple)):

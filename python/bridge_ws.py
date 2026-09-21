@@ -41,6 +41,7 @@ class BotBridge:
         *,
         on_retry: Optional[Callable[[int, str], Awaitable[None]]] = None,
         on_give_up: Optional[Callable[[int, str], Awaitable[None]]] = None,
+        recv_timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """WebSocket 送信を行い、接続/送信/受信ごとにタイムアウトと例外を区別する。
 
@@ -51,6 +52,8 @@ class BotBridge:
         trace_id = uuid4().hex
         run_id = uuid4().hex
         command_name = str(payload.get("type") or "unknown")
+        effective_recv_timeout = self.recv_timeout if recv_timeout is None else recv_timeout
+        is_sensitive_command = command_name in {"followPlayer", "say"}
         envelope = make_transport_envelope(
             source="python-agent",
             kind="command",
@@ -72,28 +75,32 @@ class BotBridge:
                         timeout=self.send_timeout,
                     )
                     stage = "recv"
-                    resp = await asyncio.wait_for(ws.recv(), timeout=self.recv_timeout)
-                    logger.info(f"WS recv: {resp}")
+                    resp = await asyncio.wait_for(ws.recv(), timeout=effective_recv_timeout)
+                    if is_sensitive_command:
+                        logger.info("WS recv command=%s ok=%s", command_name, _response_ok(resp))
+                    else:
+                        logger.info("WS recv: %s", resp)
                     return json.loads(resp)
             except Exception as error:  # noqa: BLE001 - 失敗種別ごとに判定するため広く捕捉
                 error_type = self._classify_error(stage, error)
                 is_connect_failure = stage == "connect"
                 should_retry = is_connect_failure and attempt < self.max_retries
                 event_level = "retry" if should_retry else "fault"
-                log_structured_event(
-                    logger,
-                    "WS communication failed",
-                    level=logging.WARNING if should_retry else logging.ERROR,
-                    event_level=event_level,
-                    context={
-                        "stage": stage,
-                        "attempt": attempt,
-                        "max_retries": self.max_retries,
-                        "payload": envelope,
-                        "error_type": error_type,
-                    },
-                    exc_info=error,
-                )
+                failure_context = {
+                    "stage": stage,
+                    "attempt": attempt,
+                    "max_retries": self.max_retries,
+                    "payload": _safe_log_payload(envelope) if is_sensitive_command else envelope,
+                    "error_type": error_type,
+                }
+                log_kwargs: Dict[str, Any] = {
+                    "level": logging.WARNING if should_retry else logging.ERROR,
+                    "event_level": event_level,
+                    "context": failure_context,
+                }
+                if not is_sensitive_command:
+                    log_kwargs["exc_info"] = error
+                log_structured_event(logger, "WS communication failed", **log_kwargs)
                 if should_retry:
                     if on_retry:
                         await on_retry(attempt, error_type)
@@ -102,12 +109,14 @@ class BotBridge:
 
                 if on_give_up:
                     await on_give_up(attempt - 1, error_type)
-                return {
+                result = {
                     "ok": False,
                     "error": error_type,
                     "retries": attempt - 1,
-                    "message": str(error),
                 }
+                if not is_sensitive_command:
+                    result["message"] = str(error)
+                return result
 
     def _classify_error(self, stage: str, error: Exception) -> str:
         """例外内容から段階別のエラー種別をテキストで返す。"""
@@ -124,3 +133,16 @@ class BotBridge:
         """指数バックオフの遅延を計算する。"""
 
         return min(self.backoff_base * (2 ** (attempt - 1)), 8.0)
+
+
+def _response_ok(raw_response: str) -> bool:
+    try:
+        return bool(json.loads(raw_response).get("ok"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _safe_log_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """機微なcommandログから対象名・本文・元payloadを除く。"""
+
+    return {"type": str(payload.get("body", {}).get("type") or "sensitive")}

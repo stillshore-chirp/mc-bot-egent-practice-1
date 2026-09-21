@@ -2,6 +2,8 @@ services:
   node-bot:
     environment:
       MC_HOST: bridge
+      BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://bridge:19071}
+      BRIDGE_API_KEY: ${BRIDGE_API_KEY:-}
     depends_on:
       bridge:
         condition: service_healthy

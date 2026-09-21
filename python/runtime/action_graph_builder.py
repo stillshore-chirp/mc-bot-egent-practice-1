@@ -223,7 +223,7 @@ class ActionGraphBuilder:
                 inputs={
                     "step": state.get("step"),
                     "explicit_coords": state.get("explicit_coords"),
-                    "target_player": state.get("target_player"),
+                    "target_player_present": bool(state.get("target_player")),
                 },
                 outputs={
                     "handled": result.get("handled"),

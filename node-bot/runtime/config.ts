@@ -8,6 +8,7 @@ import {
   HostResolutionResult,
   MoveGoalToleranceResolution,
   PerceptionResolution,
+  PlayerPositionBridgeResolution,
   TelemetryResolution,
   VptPlaybackResolution,
   MovementResolution,
@@ -19,6 +20,7 @@ import {
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
   resolvePerceptionConfig,
+  resolvePlayerPositionBridgeConfig,
   resolveVptPlaybackConfig,
   resolveMovementConfig,
 } from './env.js';
@@ -111,6 +113,7 @@ export interface BotRuntimeConfig {
     port: number;
   };
   agentBridge: AgentWebSocketResolution;
+  playerPositionBridge: PlayerPositionBridgeResolution;
   moveGoalTolerance: MoveGoalToleranceResolution;
   skills: {
     historyPath: string;
@@ -192,6 +195,12 @@ export function loadBotRuntimeConfig(
     env.FORCED_MOVE_MAX_RETRIES,
     env.FORCED_MOVE_RETRY_DELAY_MS,
   );
+  const playerPositionBridgeResolution = resolvePlayerPositionBridgeConfig(
+    env.BRIDGE_URL,
+    env.BRIDGE_API_KEY,
+    env.BRIDGE_PLAYER_POSITION_TIMEOUT_MS,
+    env.BRIDGE_PLAYER_POSITION_MAX_AGE_MS,
+  );
 
   const skillHistoryPathRaw = env.SKILL_HISTORY_PATH?.trim() ?? '';
   const skillHistoryPath =
@@ -214,6 +223,7 @@ export function loadBotRuntimeConfig(
       port: parseEnvInt(env.WS_PORT, 8765),
     },
     agentBridge: agentResolution,
+    playerPositionBridge: playerPositionBridgeResolution,
     moveGoalTolerance: moveGoalToleranceResolution,
     skills: {
       historyPath: skillHistoryPath,
@@ -237,6 +247,7 @@ export function loadBotRuntimeConfig(
     ...telemetryResolution.warnings,
     ...perceptionResolution.warnings,
     ...movementResolution.warnings,
+    ...playerPositionBridgeResolution.warnings,
   ];
 
   if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {
