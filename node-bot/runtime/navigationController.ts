@@ -91,6 +91,15 @@ type RendezvousMovementFailure = { ok: false; error: RendezvousErrorCode };
 
 type RendezvousSafetyStopPhase = 'bot' | 'target' | 'waypoint' | 'arrival' | 'segment';
 
+type RendezvousBotUnavailablePhase = 'entry' | 'execution' | 'segment' | 'post_move' | 'arrival';
+
+type RendezvousBotUnavailableGuard =
+  | 'active_bot_entity'
+  | 'execution_bot_entity'
+  | 'segment_position'
+  | 'post_move_position'
+  | 'arrival_position';
+
 type RendezvousSafetyStopReason =
   | 'block_reader_absent'
   | 'observation_unavailable'
@@ -400,6 +409,7 @@ export class NavigationController {
 
     const activeBot = dependencies.getActiveBot();
     if (!activeBot?.entity) {
+      this.logRendezvousBotUnavailable('entry', 'active_bot_entity', activeBot, false);
       return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
     }
 
@@ -419,7 +429,13 @@ export class NavigationController {
       return { ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY };
     }
 
-    const command = this.executeFollowPlayerCommand(parsed, { getActiveBot: () => activeBot });
+    const command = this.executeFollowPlayerCommand(parsed, {
+      getActiveBot: () => {
+        // 入口確認後にBotが入れ替わった場合は、旧Botを使い続けず安全停止する。
+        const currentBot = dependencies.getActiveBot();
+        return currentBot === activeBot ? activeBot : null;
+      },
+    });
     this.rendezvousActiveBot = activeBot;
     this.rendezvousInFlight = command;
     try {
@@ -435,6 +451,7 @@ export class NavigationController {
   ): Promise<CommandResponse> {
     const activeBot = dependencies.getActiveBot();
     if (!activeBot?.entity) {
+      this.logRendezvousBotUnavailable('execution', 'execution_bot_entity', activeBot, false);
       return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
     }
     if (!activeBot.pathfinder || typeof activeBot.pathfinder.goto !== 'function') {
@@ -493,8 +510,9 @@ export class NavigationController {
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
-      const arrivedPosition = this.readRendezvousPosition(activeBot.entity.position);
+      const arrivedPosition = this.readRendezvousPosition(activeBot.entity?.position);
       if (!arrivedPosition) {
+        this.logRendezvousBotUnavailable('arrival', 'arrival_position', activeBot, movement.gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
       }
 
@@ -598,6 +616,7 @@ export class NavigationController {
 
       const botPosition = this.readRendezvousPosition(targetBot.entity?.position);
       if (!botPosition) {
+        this.logRendezvousBotUnavailable('segment', 'segment_position', targetBot, gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
       }
 
@@ -680,6 +699,7 @@ export class NavigationController {
 
       const afterMovePosition = this.readRendezvousPosition(targetBot.entity?.position);
       if (!afterMovePosition) {
+        this.logRendezvousBotUnavailable('post_move', 'post_move_position', targetBot, gotoStarted);
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
       }
       if (this.distanceBetween(botPosition, afterMovePosition) < 0.25) {
@@ -1172,6 +1192,33 @@ export class NavigationController {
       reason,
       error,
       gotoStarted: context.gotoStarted,
+    });
+  }
+
+  /** Bot利用不可の診断値は固定enumとbooleanだけに限定し、ゲーム情報をログへ渡さない。 */
+  private logRendezvousBotUnavailable(
+    phase: RendezvousBotUnavailablePhase,
+    guard: RendezvousBotUnavailableGuard,
+    targetBot: Bot | null | undefined,
+    gotoStarted: boolean,
+  ): void {
+    let entityReady = false;
+    let positionReady = false;
+    try {
+      const entity = targetBot?.entity;
+      entityReady = Boolean(entity);
+      positionReady = this.readRendezvousPosition(entity?.position) !== null;
+    } catch {
+      // 状態取得の診断自体が失敗しても、元の安全停止を妨げない。
+    }
+
+    console.warn('[RendezvousBotUnavailable]', {
+      phase,
+      guard,
+      entityReady,
+      positionReady,
+      gotoStarted,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
     });
   }
 

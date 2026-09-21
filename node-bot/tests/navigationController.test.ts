@@ -214,6 +214,175 @@ describe('NavigationController handleMoveToCommand (abnormal)', () => {
 });
 
 describe('NavigationController handleFollowPlayerCommand', () => {
+  it('入口のBot利用不可は公開エラーを維持し、固定値だけを記録する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => null },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE });
+    expect(warning).toHaveBeenCalledWith('[RendezvousBotUnavailable]', {
+      phase: 'entry',
+      guard: 'active_bot_entity',
+      entityReady: false,
+      positionReady: false,
+      gotoStarted: false,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
+    });
+  });
+
+  it('入口確認後にBotが消えた場合は実行開始guardを固定診断する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    const getActiveBot = vi.fn<() => Bot | null>()
+      .mockReturnValueOnce(fixture.bot)
+      .mockReturnValueOnce(null);
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE });
+    expect(getActiveBot).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalledWith('[RendezvousBotUnavailable]', {
+      phase: 'execution',
+      guard: 'execution_bot_entity',
+      entityReady: false,
+      positionReady: false,
+      gotoStarted: false,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
+    });
+  });
+
+  it('最初の区間前にBot位置が読めない場合は移動せず固定診断を記録する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    (fixture.bot as unknown as { entity: { position: unknown } }).entity.position = null;
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousBotUnavailable]', {
+      phase: 'segment',
+      guard: 'segment_position',
+      entityReady: true,
+      positionReady: false,
+      gotoStarted: false,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
+    });
+  });
+
+  it('Bot利用不可診断ログへ対象名・座標・raw値を含めない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    const sentinelName = 'SentinelPlayer';
+    const sentinelPosition = { x: 731, y: 811, z: 907 };
+    fixture.targetEntity.username = sentinelName;
+    fixture.targetEntity.position = sentinelPosition;
+    (fixture.targetEntity as unknown as { id: string; raw: string }).id = 'entity-sentinel-id';
+    (fixture.targetEntity as unknown as { id: string; raw: string }).raw = 'raw-exception-sentinel';
+    (fixture.bot as unknown as { players: Record<string, unknown> }).players = {
+      [sentinelName]: { username: sentinelName, entity: fixture.targetEntity },
+    };
+    (fixture.bot as unknown as { entity: { position: unknown } }).entity.position = null;
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: sentinelName, stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE });
+    const serializedLogs = JSON.stringify(warning.mock.calls);
+    expect(serializedLogs).not.toContain(sentinelName);
+    expect(serializedLogs).not.toContain('731');
+    expect(serializedLogs).not.toContain('811');
+    expect(serializedLogs).not.toContain('907');
+    expect(serializedLogs).not.toContain('entity-sentinel-id');
+    expect(serializedLogs).not.toContain('raw-exception-sentinel');
+    expect(warning).toHaveBeenCalledWith('[RendezvousBotUnavailable]', {
+      phase: 'segment',
+      guard: 'segment_position',
+      entityReady: true,
+      positionReady: false,
+      gotoStarted: false,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
+    });
+  });
+
+  it('移動後にBot位置が読めない場合はgoto開始済みを固定診断へ残す', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.goto.mockImplementationOnce(async () => {
+      (fixture.bot as unknown as { entity: { position: unknown } }).entity.position = null;
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith('[RendezvousBotUnavailable]', {
+      phase: 'post_move',
+      guard: 'post_move_position',
+      entityReady: true,
+      positionReady: false,
+      gotoStarted: true,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
+    });
+  });
+
+  it('到着判定前にBot entityが消えた場合も固定診断を記録して停止する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fixture = createRendezvousBotFixture();
+    const controller = createRendezvousController();
+    const moveRendezvousSegments = vi.fn(async () => {
+      (fixture.bot as unknown as { entity: unknown }).entity = null;
+      return {
+        ok: true as const,
+        target: {
+          entity: fixture.targetEntity,
+          position: { x: 4, y: 64, z: 0 },
+          source: 'entity' as const,
+          observedAt: Date.now(),
+        },
+        gotoStarted: true,
+      };
+    });
+    (controller as unknown as {
+      moveRendezvousSegments: typeof moveRendezvousSegments;
+    }).moveRendezvousSegments = moveRendezvousSegments;
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE });
+    expect(moveRendezvousSegments).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith('[RendezvousBotUnavailable]', {
+      phase: 'arrival',
+      guard: 'arrival_position',
+      entityReady: false,
+      positionReady: false,
+      gotoStarted: true,
+      error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE,
+    });
+  });
+
   it('完全一致で観測できるプレイヤーへ慎重profileの一点合流を行う', async () => {
     const controller = createRendezvousController();
     const fixture = createRendezvousBotFixture();
