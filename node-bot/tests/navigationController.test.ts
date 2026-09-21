@@ -813,6 +813,36 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(fixture.goto).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { direction: '上', supportY: 64, expectedY: 65 },
+    { direction: '下', supportY: 62, expectedY: 63 },
+  ])('target Y同一でもraw unsupportedなら同一XZの$direction段を選ぶ', async ({ supportY, expectedY }) => {
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 4, y: 64, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      const x = Math.floor(position.x);
+      if ((x === 0 || x === 1 || x === 4) && position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      if (x === 2 && position.y === supportY) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    const [goal] = fixture.goto.mock.calls[0] as [{ x: number; y: number; z: number }];
+    expect(goal).toMatchObject({ x: 2, y: expectedY, z: 0 });
+  });
+
   it('観測不能なwaypoint候補は代替候補を含めてfail-closedにする', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const controller = createRendezvousController();
@@ -1218,7 +1248,50 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(secondResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.BUSY });
   });
 
+  it('timeout源とgoto lifecycleを名前座標raw例外なしの固定イベントで識別する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controllerTimeout = createRendezvousController({ timeoutMs: 1, cancelGraceMs: 0, maxRetries: 0 });
+    const timeoutFixture = createRendezvousBotFixture();
+    timeoutFixture.goto.mockImplementation(() => new Promise<void>(() => undefined));
+
+    const timeoutResponse = await controllerTimeout.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => timeoutFixture.bot },
+    );
+
+    expect(timeoutResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    const navigationEvents = () => warning.mock.calls
+      .filter(([label]) => label === '[RendezvousNavigation]')
+      .map(([, event]) => event);
+    expect(navigationEvents()).toEqual(expect.arrayContaining([
+      { event: 'goto_started', gotoStarted: true },
+      { event: 'timeout', source: 'controller_timer', gotoStarted: true },
+      { event: 'stop_requested', source: 'controller_timer', gotoStarted: true },
+      { event: 'disconnect_requested', source: 'timeout_grace', gotoStarted: true },
+    ]));
+
+    const controllerPathfinder = createRendezvousController({ timeoutMs: 100, maxRetries: 0 });
+    const pathfinderFixture = createRendezvousBotFixture();
+    const pathfinderTimeout = new Error('Took to long to decide path to goal!');
+    pathfinderTimeout.name = 'Timeout';
+    pathfinderFixture.goto.mockRejectedValue(pathfinderTimeout);
+
+    const pathfinderResponse = await controllerPathfinder.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => pathfinderFixture.bot },
+    );
+
+    expect(pathfinderResponse).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(navigationEvents()).toEqual(expect.arrayContaining([
+      { event: 'goto_started', gotoStarted: true },
+      { event: 'goto_settled', outcome: 'rejected', gotoStarted: true },
+      { event: 'timeout', source: 'pathfinder', gotoStarted: true },
+    ]));
+    expect(JSON.stringify(navigationEvents())).not.toContain('Took to long to decide path to goal!');
+  });
+
   it('合流全体のdeadlineは区間timeoutを残時間へ切り詰め、新しい区間を開始しない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const controller = createRendezvousController({
       timeoutMs: 100,
       deadlineMs: 5,
@@ -1238,9 +1311,20 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
     expect(fixture.goto).toHaveBeenCalledTimes(1);
     expect(fixture.setGoal).toHaveBeenCalledWith(null);
+    expect(warning).toHaveBeenCalledWith('[RendezvousNavigation]', {
+      event: 'timeout',
+      source: 'controller_deadline',
+      gotoStarted: true,
+    });
+    expect(warning).toHaveBeenCalledWith('[RendezvousNavigation]', {
+      event: 'stop_requested',
+      source: 'controller_deadline',
+      gotoStarted: true,
+    });
   });
 
   it('Bridge照会がdeadlineを越えた場合はtimeoutを返し、移動を開始しない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const fixture = createRendezvousBotFixture();
     (fixture.bot as unknown as { players: Record<string, unknown> }).players = {};
     const lookup = vi.fn(() => new Promise<{
@@ -1269,6 +1353,59 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
     expect(lookup).toHaveBeenCalledTimes(1);
     expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousNavigation]', {
+      event: 'timeout',
+      source: 'controller_deadline',
+      gotoStarted: false,
+    });
+    expect(warning).not.toHaveBeenCalledWith('[RendezvousNavigation]', {
+      event: 'stop_requested',
+      source: 'controller_deadline',
+      gotoStarted: false,
+    });
+  });
+
+  it('移動後の対象再照会がdeadlineを越えた場合もcontroller_deadlineとして記録する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fixture = createRendezvousBotFixture();
+    (fixture.bot as unknown as { players: Record<string, unknown> }).players = {};
+    const lookup = vi.fn()
+      .mockResolvedValueOnce({
+        position: { x: 4, y: 64, z: 0 },
+        dimension: 'overworld',
+        observedAt: Date.now(),
+      })
+      .mockImplementationOnce(() => new Promise<{
+        position: { x: number; y: number; z: number };
+        dimension: string;
+        observedAt: number;
+      }>((resolve) => {
+        setTimeout(() => resolve({
+          position: { x: 4, y: 64, z: 0 },
+          dimension: 'overworld',
+          observedAt: Date.now(),
+        }), 100);
+      }));
+    const controller = createRendezvousController({
+      timeoutMs: 100,
+      deadlineMs: 30,
+      maxRetries: 0,
+      playerPositionBridge: { lookup },
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT });
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith('[RendezvousNavigation]', {
+      event: 'timeout',
+      source: 'controller_deadline',
+      gotoStarted: true,
+    });
   });
 
   it('timeout後の遅延gotoはsettleを待ってから返答し、返答後の移動を残さない', async () => {
