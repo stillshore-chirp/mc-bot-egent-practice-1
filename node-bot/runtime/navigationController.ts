@@ -81,9 +81,26 @@ interface RendezvousTargetSnapshot {
 interface RendezvousMovementResult {
   ok: true;
   target: RendezvousTargetSnapshot;
+  /** 到着判定までにpathfinder.gotoを開始したか。安全停止ログへ固定値だけ渡す。 */
+  gotoStarted: boolean;
 }
 
 type RendezvousMovementFailure = { ok: false; error: RendezvousErrorCode };
+
+type RendezvousSafetyStopPhase = 'bot' | 'target' | 'waypoint' | 'arrival' | 'segment';
+
+type RendezvousSafetyStopReason =
+  | 'block_reader_absent'
+  | 'observation_unavailable'
+  | 'liquid_or_hazardous_block'
+  | 'unsupported_floor'
+  | 'nearby_hostile'
+  | 'segment_hostile';
+
+interface RendezvousSafetyStopContext {
+  phase: RendezvousSafetyStopPhase;
+  gotoStarted: boolean;
+}
 
 interface RendezvousCommandArgs {
   targetName: string;
@@ -477,7 +494,11 @@ export class NavigationController {
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TIMEOUT };
       }
 
-      const observedTargetHazard = this.inspectRendezvousHazard(activeBot, observedTarget.target.position);
+      const observedTargetHazard = this.inspectRendezvousHazard(
+        activeBot,
+        observedTarget.target.position,
+        { phase: 'arrival', gotoStarted: movement.gotoStarted },
+      );
       if (observedTargetHazard) {
         return { ok: false, error: observedTargetHazard };
       }
@@ -549,6 +570,7 @@ export class NavigationController {
     let target = initialTarget;
     let previousBotPosition: RendezvousPosition | null = null;
     let targetMoved = false;
+    let gotoStarted = false;
 
     for (let segment = 0; segment < MAX_RENDEZVOUS_SEGMENTS; segment += 1) {
       if (this.isRendezvousDeadlineExpired(rendezvousDeadlineAt)) {
@@ -560,7 +582,11 @@ export class NavigationController {
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.BOT_UNAVAILABLE };
       }
 
-      const currentHazard = this.inspectRendezvousHazard(targetBot, botPosition);
+      const currentHazard = this.inspectRendezvousHazard(
+        targetBot,
+        botPosition,
+        { phase: 'bot', gotoStarted },
+      );
       if (currentHazard) {
         return { ok: false, error: currentHazard };
       }
@@ -570,20 +596,28 @@ export class NavigationController {
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.TARGET_UNAVAILABLE };
       }
       if (distance <= stopDistance) {
-        return { ok: true, target };
+        return { ok: true, target, gotoStarted };
       }
 
       // 目的地が遠距離かつBridge由来なら、未観測chunkのblockAt(null)を
       // 目的地の危険とも安全とも解釈しない。次のwaypointだけを検査する。
       if (target.source === 'entity' || distance <= MAX_RENDEZVOUS_SEGMENT_DISTANCE) {
-        const targetHazard = this.inspectRendezvousHazard(targetBot, target.position);
+        const targetHazard = this.inspectRendezvousHazard(
+          targetBot,
+          target.position,
+          { phase: 'target', gotoStarted },
+        );
         if (targetHazard) {
           return { ok: false, error: targetHazard };
         }
       }
 
       const waypoint = this.buildRendezvousWaypoint(botPosition, target.position, stopDistance);
-      const waypointHazard = this.inspectRendezvousHazard(targetBot, waypoint);
+      const waypointHazard = this.inspectRendezvousHazard(
+        targetBot,
+        waypoint,
+        { phase: 'waypoint', gotoStarted },
+      );
       if (waypointHazard) {
         return { ok: false, error: waypointHazard };
       }
@@ -591,6 +625,11 @@ export class NavigationController {
         entities?: Record<string, RendezvousEntity | undefined>;
       };
       if (this.hasNearbyHostileAlongSegment(targetBot, botPosition, waypoint, botWithEntities.entities)) {
+        this.logRendezvousSafetyStop(
+          { phase: 'segment', gotoStarted },
+          'segment_hostile',
+          RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+        );
         return { ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED };
       }
 
@@ -607,6 +646,7 @@ export class NavigationController {
       );
       const cautiousMovements = this.cautiousMovements ?? targetBot.pathfinder.movements;
 
+      gotoStarted = true;
       try {
         await this.gotoRendezvousWithTimeout(targetBot, goal, cautiousMovements, rendezvousDeadlineAt);
       } catch (error) {
@@ -911,13 +951,21 @@ export class NavigationController {
     return { x: candidate.x, y: candidate.y, z: candidate.z };
   }
 
-  private inspectRendezvousHazard(targetBot: Bot, position: RendezvousPosition): RendezvousErrorCode | null {
+  private inspectRendezvousHazard(
+    targetBot: Bot,
+    position: RendezvousPosition,
+    context: RendezvousSafetyStopContext,
+  ): RendezvousErrorCode | null {
     const botWithBlocks = targetBot as Bot & {
       blockAt?: (position: Vec3, forceLoad?: boolean) => unknown;
       entities?: Record<string, RendezvousEntity | undefined>;
     };
     if (typeof botWithBlocks.blockAt !== 'function') {
-      return RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED;
+      return this.logAndReturnRendezvousSafetyStop(
+        context,
+        'block_reader_absent',
+        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      );
     }
 
     const center = new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
@@ -927,29 +975,72 @@ export class NavigationController {
       for (const checkPosition of checks) {
         const block = botWithBlocks.blockAt(checkPosition, true);
         if (!block) {
-          return RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE;
+          return this.logAndReturnRendezvousSafetyStop(
+            context,
+            'observation_unavailable',
+            RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
+          );
         }
         blocks.push(block);
       }
     } catch {
-      return RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE;
+      return this.logAndReturnRendezvousSafetyStop(
+        context,
+        'observation_unavailable',
+        RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
+      );
     }
 
     if (blocks.some((block) => this.isRendezvousDangerousBlock(block))) {
-      return RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED;
+      return this.logAndReturnRendezvousSafetyStop(
+        context,
+        'liquid_or_hazardous_block',
+        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      );
     }
 
     const below = blocks[2] as { boundingBox?: unknown; name?: unknown };
     const belowName = String(below.name ?? '').toLowerCase();
     if (below.boundingBox === 'empty' || belowName.includes('air')) {
-      return RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED;
+      return this.logAndReturnRendezvousSafetyStop(
+        context,
+        'unsupported_floor',
+        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      );
     }
 
     if (this.hasNearbyHostile(targetBot, position, botWithBlocks.entities)) {
-      return RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED;
+      return this.logAndReturnRendezvousSafetyStop(
+        context,
+        'nearby_hostile',
+        RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      );
     }
 
     return null;
+  }
+
+  private logAndReturnRendezvousSafetyStop(
+    context: RendezvousSafetyStopContext,
+    reason: RendezvousSafetyStopReason,
+    error: RendezvousErrorCode,
+  ): RendezvousErrorCode {
+    this.logRendezvousSafetyStop(context, reason, error);
+    return error;
+  }
+
+  /** 安全停止の診断値は固定enumだけに限定し、world/entityの値をログへ渡さない。 */
+  private logRendezvousSafetyStop(
+    context: RendezvousSafetyStopContext,
+    reason: RendezvousSafetyStopReason,
+    error: RendezvousErrorCode,
+  ): void {
+    console.warn('[RendezvousSafetyStop]', {
+      phase: context.phase,
+      reason,
+      error,
+      gotoStarted: context.gotoStarted,
+    });
   }
 
   private isRendezvousDangerousBlock(block: unknown): boolean {

@@ -1,6 +1,6 @@
 // 日本語コメント：NavigationController の異常系挙動を集中的に検証するユニットテスト
 // 役割：座標バリデーションと Bot 未接続時の扱い、強制移動記録のレート制御を安全に確認する
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Bot } from 'mineflayer';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 
@@ -9,6 +9,10 @@ import {
   RENDEZVOUS_ERROR_CODES,
 } from '../runtime/navigationController.js';
 import type { PlayerPositionBridgeClient } from '../runtime/playerPositionBridge.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /**
  * 実際の mineflayer へ依存せずに pathfinder を模倣するための極小モック。
@@ -352,6 +356,7 @@ describe('NavigationController handleFollowPlayerCommand', () => {
   });
 
   it('遠距離Bridge対象はwaypointを有限区間で進み、目的地chunk未観測なら成功扱いにしない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const fixture = createRendezvousBotFixture();
     (fixture.bot as unknown as { players: Record<string, unknown> }).players = {};
     const remoteTarget = { x: 100, y: 64, z: 0 };
@@ -383,6 +388,12 @@ describe('NavigationController handleFollowPlayerCommand', () => {
     expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE });
     expect(fixture.goto.mock.calls.length).toBeGreaterThan(1);
     expect(fixture.goto.mock.calls.every(([goal]) => (goal as { x?: number }).x !== remoteTarget.x)).toBe(true);
+    expect(warning).toHaveBeenLastCalledWith('[RendezvousSafetyStop]', {
+      phase: 'target',
+      reason: 'observation_unavailable',
+      error: RENDEZVOUS_ERROR_CODES.OBSERVATION_UNAVAILABLE,
+      gotoStarted: true,
+    });
   });
 
   it('静止した遠距離対象でも区間上限を越えて無期限に追跡しない', async () => {
@@ -425,6 +436,7 @@ describe('NavigationController handleFollowPlayerCommand', () => {
   });
 
   it('現在位置または対象位置のhazardを検知したら掘削fallbackなしで停止する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const controller = createRendezvousController();
     const fixture = createRendezvousBotFixture();
     fixture.blocks.targetLiquid = true;
@@ -435,9 +447,16 @@ describe('NavigationController handleFollowPlayerCommand', () => {
 
     expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
     expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'target',
+      reason: 'liquid_or_hazardous_block',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
   });
 
   it('waypoint間の既知hostileも点検し、危険区間へ進まない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const controller = createRendezvousController();
     const fixture = createRendezvousBotFixture();
     (fixture.bot as unknown as { entities: Record<string, unknown> }).entities.hostile = {
@@ -452,6 +471,148 @@ describe('NavigationController handleFollowPlayerCommand', () => {
 
     expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
     expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'bot',
+      reason: 'nearby_hostile',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('block readerがない場合はhazard停止を維持し、固定理由だけを記録する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    delete (fixture.bot as unknown as { blockAt?: unknown }).blockAt;
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'bot',
+      reason: 'block_reader_absent',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('高低差のwaypointでunsupported floorを検知してもhazard errorを維持する', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 0, y: 70, z: 0 };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      if (position.y === 63 || position.y === 69) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'waypoint',
+      reason: 'unsupported_floor',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('区間途中のhostileはsegment理由で停止し、gotoを開始しない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.targetEntity.position = { x: 20, y: 64, z: 0 };
+    (fixture.bot as unknown as { entities: Record<string, unknown> }).entities.hostile = {
+      type: 'hostile',
+      position: { x: 8, y: 64, z: 0 },
+      id: 'entity-sentinel-id',
+    };
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith('[RendezvousSafetyStop]', {
+      phase: 'segment',
+      reason: 'segment_hostile',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: false,
+    });
+  });
+
+  it('到着直前の再観測もarrival理由を記録し、goto開始済みを示す', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    fixture.goto.mockImplementationOnce(async () => {
+      fixture.blocks.targetLiquid = true;
+      fixture.botEntity.position = { x: 2, y: 64, z: 0 };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: 'player', stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    expect(fixture.goto).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenLastCalledWith('[RendezvousSafetyStop]', {
+      phase: 'arrival',
+      reason: 'liquid_or_hazardous_block',
+      error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED,
+      gotoStarted: true,
+    });
+  });
+
+  it('安全停止ログへ対象名・座標・raw block/entity値を含めない', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const controller = createRendezvousController();
+    const fixture = createRendezvousBotFixture();
+    const sentinelName = 'SentinelPlayer';
+    const sentinelPosition = { x: 731, y: 811, z: 907 };
+    fixture.targetEntity.username = sentinelName;
+    fixture.targetEntity.position = sentinelPosition;
+    (fixture.bot as unknown as { players: Record<string, unknown> }).players = {
+      [sentinelName]: { username: sentinelName, entity: fixture.targetEntity },
+    };
+    const blockAt = (fixture.bot as unknown as { blockAt: ReturnType<typeof vi.fn> }).blockAt;
+    blockAt.mockImplementation((position: { x: number; y: number; z: number }) => {
+      if (position.x === sentinelPosition.x && position.y === sentinelPosition.y && position.z === sentinelPosition.z) {
+        return { name: 'minecraft:lava-sentinel', liquid: true, boundingBox: 'liquid' };
+      }
+      if (position.y === 63) {
+        return { name: 'stone', boundingBox: 'block' };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    });
+
+    const response = await controller.handleFollowPlayerCommand(
+      { target: sentinelName, stopDistance: 2, maintainLineOfSight: true },
+      { getActiveBot: () => fixture.bot },
+    );
+
+    expect(response).toEqual({ ok: false, error: RENDEZVOUS_ERROR_CODES.HAZARD_BLOCKED });
+    const serializedLogs = JSON.stringify(warning.mock.calls);
+    expect(serializedLogs).not.toContain(sentinelName);
+    expect(serializedLogs).not.toContain('731');
+    expect(serializedLogs).not.toContain('811');
+    expect(serializedLogs).not.toContain('907');
+    expect(serializedLogs).not.toContain('minecraft:lava-sentinel');
+    expect(serializedLogs).not.toContain('entity-sentinel-id');
   });
 
   it('対象が移動した場合は有限回だけ再解決して新位置へ到着を再確認する', async () => {
