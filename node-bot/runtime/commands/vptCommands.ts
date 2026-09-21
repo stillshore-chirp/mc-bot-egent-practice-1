@@ -11,6 +11,7 @@ import type {
 } from '../snapshots.js';
 import type { CommandResponse } from '../types.js';
 import { radToDeg } from '../perception/perceptionUtils.js';
+import { acquireMovementControl } from '../movementControl.js';
 
 export interface VptCommandContext {
   getActiveBot: () => Bot | null;
@@ -149,6 +150,8 @@ export function createVptCommandHandlers(context: VptCommandContext) {
     }
 
     const metadata = isRecord(args.metadata) ? args.metadata : undefined;
+    const release = acquireMovementControl(activeBot);
+    if (!release) return { ok: false, error: 'navigation_busy' };
 
     try {
       isVptPlaybackActive = true;
@@ -159,6 +162,7 @@ export function createVptCommandHandlers(context: VptCommandContext) {
       return { ok: false, error: 'Failed to execute VPT action sequence' };
     } finally {
       isVptPlaybackActive = false;
+      release();
     }
   }
 
