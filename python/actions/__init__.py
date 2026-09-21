@@ -25,12 +25,14 @@ class Actions:
         *,
         on_bridge_retry: Optional[Callable[[int, str], Awaitable[None]]] = None,
         on_bridge_give_up: Optional[Callable[[int, str], Awaitable[None]]] = None,
+        worker_task_timeout_seconds: float = 300.0,
     ) -> None:
         # 共通ディスパッチャを用意し、モジュール間で状態とロギングを共有する。
         self._dispatcher = ActionDispatcher(
             bridge,
             on_bridge_retry=on_bridge_retry,
             on_bridge_give_up=on_bridge_give_up,
+            worker_task_timeout_seconds=worker_task_timeout_seconds,
         )
         # カテゴリ別の実装に委譲し、責務を明確化する。
         self.chat = ChatActions(self._dispatcher)

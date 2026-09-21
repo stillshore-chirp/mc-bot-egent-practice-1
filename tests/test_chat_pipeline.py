@@ -123,7 +123,7 @@ async def test_clear_come_here_bypasses_planner_and_uses_chat_sender(
     assert agent.memory.get("last_requester") == "speaker"
     assert len(agent.executed) == 1
     assert agent.executed[0].intent == "move_to_player"
-    assert agent.executed[0].plan == ["come here"]
+    assert agent.executed[0].plan == ["話者に合流する"]
     assert agent.actions.say_messages == [
         "呼びかけを受けました。合流できるか確認します。"
     ]
@@ -201,11 +201,13 @@ async def test_plan_executor_sends_confirmation_response_once() -> None:
 @pytest.mark.anyio
 async def test_come_here_reaches_follow_player_once_through_real_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """入口から実AgentOrchestratorのActionGraphまで話者追従を通す。"""
 
     actions = _IntegrationActions()
     orchestrator = AgentOrchestrator(actions, Memory())
+    caplog.set_level(logging.INFO)
 
     async def no_block_evaluations() -> None:
         return None
@@ -223,6 +225,7 @@ async def test_come_here_reaches_follow_player_once_through_real_orchestrator(
         "呼びかけを受けました。合流できるか確認します。",
         "speaker さんに合流しました。",
     ]
+    assert all("come here" not in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.anyio
@@ -262,3 +265,80 @@ async def test_come_here_ack_precedes_safe_failure_notice(
         "対象プレイヤーが現在オンラインでないため、合流できません。対象が参加してから、もう一度呼びかけてください。",
     ]
     assert reflection_results[-1]["outcome"] == "failed"
+
+
+@pytest.mark.anyio
+async def test_relayed_chat_rephrased_as_come_here_cannot_follow_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """元発話が伝言なら、LLMのcome here言い換え後もfollowPlayerへ進まない。"""
+
+    actions = _IntegrationActions()
+    orchestrator = AgentOrchestrator(actions, Memory())
+
+    async def no_block_evaluations() -> None:
+        return None
+
+    async def relayed_plan(*_: Any, **__: Any) -> PlanOut:
+        return PlanOut(plan=["come here"], intent="move_to_player")
+
+    monkeypatch.setattr(orchestrator, "_collect_block_evaluations", no_block_evaluations)
+    monkeypatch.setattr("chat_pipeline.plan", relayed_plan)
+
+    await orchestrator._process_chat(ChatTask("speaker", "tell Alex to come here"))
+
+    assert actions.follow_calls == []
+    assert actions.say_messages == [
+        "別のプレイヤーへの伝言または来訪を望まない発話として解釈されたため、合流を開始しません。直接呼びかける場合は「ここに来て」と送ってください。"
+    ]
+
+
+@pytest.mark.anyio
+async def test_relayed_move_plan_suppresses_initial_resp_before_safe_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """伝言をmove_to_playerへ誤昇格した計画でも通知を一意にする。"""
+
+    actions = _IntegrationActions()
+    orchestrator = AgentOrchestrator(actions, Memory())
+
+    async def no_block_evaluations() -> None:
+        return None
+
+    async def relayed_plan(*_: Any, **__: Any) -> PlanOut:
+        return PlanOut(
+            plan=["come here"],
+            intent="move_to_player",
+            resp="Alexさんへ伝えます。",
+        )
+
+    monkeypatch.setattr(orchestrator, "_collect_block_evaluations", no_block_evaluations)
+    monkeypatch.setattr("chat_pipeline.plan", relayed_plan)
+
+    await orchestrator._process_chat(ChatTask("speaker", "tell Alex to come here"))
+
+    assert actions.follow_calls == []
+    assert actions.say_messages == [
+        "別のプレイヤーへの伝言または来訪を望まない発話として解釈されたため、合流を開始しません。直接呼びかける場合は「ここに来て」と送ってください。"
+    ]
+
+
+def test_memory_sensitive_chat_values_are_redacted_from_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    memory = Memory()
+
+    with caplog.at_level(logging.INFO, logger="memory"):
+        memory.set("last_requester", "SecretPlayer")
+        memory.set("_active_chat_message", "come here with private context")
+        memory.set(
+            "last_chat",
+            {"username": "SecretPlayer", "message": "come here with private context"},
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert all("SecretPlayer" not in message for message in messages)
+    assert all("private context" not in message for message in messages)
+    assert any("'category': 'chat_speaker'" in message for message in messages)
+    assert any("'category': 'chat_source'" in message for message in messages)
+    assert any("'category': 'chat_record'" in message for message in messages)

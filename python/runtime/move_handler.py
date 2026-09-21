@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
+
 if TYPE_CHECKING:
     from agent import AgentOrchestrator
 
 
 _RENDEZVOUS_USER_MESSAGES = {
     "rendezvous_invalid_args": "合流指示の対象を確認できません。対象プレイヤー名を確認して、もう一度呼びかけてください。",
+    "rendezvous_worker_timeout_mismatch": "合流処理の実行時間設定が短いため、安全に開始できません。設定を確認してから、もう一度呼びかけてください。",
+    "rendezvous_busy": "別の合流処理が進行中のため、今回は合流を開始できません。処理が終わってから、もう一度呼びかけてください。",
     "rendezvous_bot_unavailable": "Botが接続されていないため、合流を開始できません。接続を確認して、もう一度呼びかけてください。",
     "rendezvous_target_invalid": "対象プレイヤーを確認できないため、合流を開始できません。プレイヤー名を確認してください。",
     "rendezvous_target_unavailable": "対象プレイヤーを確認できないため、合流を開始できません。対象が同じワールドにいるか確認してください。",
@@ -27,6 +30,22 @@ _RENDEZVOUS_USER_MESSAGES = {
     "rendezvous_path_failed": "対象まで安全に移動できませんでした。周囲を確認して、もう一度呼びかけてください。",
     "rendezvous_line_of_sight_unsupported": "対象の視線確認を利用できないため、今回は移動を開始しません。Bot設定を確認してから、もう一度呼びかけてください。",
 }
+_RENDEZVOUS_UNCONFIRMED_MESSAGE = (
+    "合流結果を確認できません。Botの接続・動作状況を確認してから、もう一度呼びかけてください。"
+)
+for _transport_error in (
+    "recv_timeout",
+    "recv_error",
+    "recv_os_error",
+    "connect_timeout",
+    "connect_refused",
+    "connect_error",
+    "connect_os_error",
+    "send_timeout",
+    "send_error",
+    "send_os_error",
+):
+    _RENDEZVOUS_USER_MESSAGES[_transport_error] = _RENDEZVOUS_UNCONFIRMED_MESSAGE
 _DEFAULT_RENDEZVOUS_FAILURE_MESSAGE = (
     "対象プレイヤーへの合流に失敗しました。対象が同じワールドにいるか確認して、もう一度呼びかけてください。"
 )
@@ -87,6 +106,25 @@ async def handle_move(
 
     # move_to_player はプレイヤー名が分かれば追従コマンドを優先する。
     if category == "move_to_player" and target_player:
+        # action_analyzer は runtime.rules 経由で本モジュールを参照するため、
+        # 循環importを避けて実行時に解決する。
+        from orchestrator.action_analyzer import is_move_to_player_source_excluded
+
+        memory = getattr(orchestrator, "memory", None)
+        active_chat_message = memory.get("_active_chat_message") if memory else None
+        if isinstance(active_chat_message, str) and is_move_to_player_source_excluded(
+            active_chat_message
+        ):
+            blocked_message = (
+                "別のプレイヤーへの伝言または来訪を望まない発話として解釈されたため、合流を開始しません。"
+                "直接呼びかける場合は「ここに来て」と送ってください。"
+            )
+            await orchestrator.actions.say(blocked_message)  # type: ignore[attr-defined]
+            return {
+                "handled": False,
+                "updated_target": last_target,
+                "failure_detail": blocked_message,
+            }
         follow_resp = await orchestrator.actions.follow_player(target_player)  # type: ignore[attr-defined]
         if isinstance(follow_resp, dict) and follow_resp.get("ok"):
             await orchestrator.actions.say(  # type: ignore[attr-defined]

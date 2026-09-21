@@ -212,6 +212,10 @@ def test_handle_move_maps_rendezvous_error_without_exposing_raw_details():
     ("error_code", "expected_message"),
     (
         (
+            "rendezvous_busy",
+            "別の合流処理が進行中のため、今回は合流を開始できません。処理が終わってから、もう一度呼びかけてください。",
+        ),
+        (
             "rendezvous_target_offline",
             "対象プレイヤーが現在オンラインでないため、合流できません。対象が参加してから、もう一度呼びかけてください。",
         ),
@@ -230,6 +234,18 @@ def test_handle_move_maps_rendezvous_error_without_exposing_raw_details():
         (
             "rendezvous_distance_limit",
             "対象までの距離が安全な上限を超えているため、合流を完了できませんでした。対象の近くで再度呼びかけてください。",
+        ),
+        (
+            "recv_timeout",
+            "合流結果を確認できません。Botの接続・動作状況を確認してから、もう一度呼びかけてください。",
+        ),
+        (
+            "recv_error",
+            "合流結果を確認できません。Botの接続・動作状況を確認してから、もう一度呼びかけてください。",
+        ),
+        (
+            "connect_refused",
+            "合流結果を確認できません。Botの接続・動作状況を確認してから、もう一度呼びかけてください。",
         ),
     ),
 )

@@ -37,7 +37,7 @@ def build_dependencies(config: AgentConfig) -> Tuple[BotBridge, Actions, Memory,
     """エージェントが利用する依存オブジェクトを生成する。"""
 
     bridge = BotBridge(config.ws_url)
-    actions = Actions(bridge)
+    actions = Actions(bridge, worker_task_timeout_seconds=config.worker_task_timeout_seconds)
     memory = Memory()
     seed_path = Path(__file__).resolve().parent.parent / "skills" / "seed_library.json"
     skill_repo = SkillRepository(config.skill_library_path, seed_path=str(seed_path))

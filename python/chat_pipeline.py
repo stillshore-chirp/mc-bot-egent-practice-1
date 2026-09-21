@@ -6,7 +6,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from orchestrator.action_analyzer import is_move_to_player_command
+from orchestrator.action_analyzer import (
+    is_move_to_player_command,
+    is_move_to_player_source_excluded,
+)
 from planner import PlanOut, plan
 from runtime.action_graph import ChatTask
 from runtime.rules import ACTION_TASK_RULES, ORE_PICKAXE_REQUIREMENTS, PICKAXE_TIER_BY_NAME
@@ -69,7 +72,8 @@ class ChatPipeline:
             # 明確な呼び寄せは、座標を要求する LLM 確認へ流さず、チャット
             # 送信者を target_player として ActionGraph の followPlayer へ渡す。
             plan_out = PlanOut(
-                plan=[task.message],
+                # 元チャット本文をPlanExecutor/ReActログへ渡さない固定step。
+                plan=["話者に合流する"],
                 intent="move_to_player",
                 goal_profile={
                     "summary": "発話したプレイヤーのもとへ移動",
@@ -108,6 +112,13 @@ class ChatPipeline:
             or plan_out.clarification_needed != "none"
             or plan_out.next_action == "chat"
         )
+        if (
+            should_relay_initial_response
+            and is_move_to_player_source_excluded(task.message)
+            and plan_out.intent == "move_to_player"
+        ):
+            # 元発話を後段が安全拒否する経路では、LLMの初期respを重ねない。
+            should_relay_initial_response = False
         if should_relay_initial_response:
             agent.logger.info(
                 "relaying llm response to player username=%s resp='%s'",
@@ -116,7 +127,11 @@ class ChatPipeline:
             )
             await agent.actions.say(plan_out.resp)
 
-        await agent._execute_plan(plan_out, initial_target=initial_target)
+        agent.memory.set("_active_chat_message", task.message)
+        try:
+            await agent._execute_plan(plan_out, initial_target=initial_target)
+        finally:
+            agent.memory.set("_active_chat_message", None)
         agent.memory.set("last_chat", {"username": task.username, "message": task.message})
 
     async def handle_action_task(

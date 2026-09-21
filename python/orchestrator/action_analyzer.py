@@ -67,6 +67,28 @@ MOVE_TO_PLAYER_NEGATIONS = (
 )
 
 
+def _contains_relay_instruction(text: str) -> bool:
+    normalized = str(text or "").lower()
+    relay_markers = (
+        "tell ",
+        "ask ",
+        "message ",
+        "伝えて",
+        "伝えます",
+        "と言って",
+        "と言い",
+    )
+    return any(marker in normalized for marker in relay_markers)
+
+
+def _contains_move_to_player_negation(text: str) -> bool:
+    compact = "".join(str(text or "").lower().split())
+    return any(
+        "".join(phrase.lower().split()) in compact
+        for phrase in MOVE_TO_PLAYER_NEGATIONS
+    )
+
+
 def is_move_to_player_command(text: str) -> bool:
     """明確な呼び寄せ表現を deterministic に判定する。
 
@@ -78,18 +100,27 @@ def is_move_to_player_command(text: str) -> bool:
     compact = "".join(raw_text.lower().split())
     # 別プレイヤーへの伝言・引用を話者本人への指示として実行しない。
     # 明確な直接呼びかけだけを入口で固定し、伝言は従来のplannerへ委ねる。
-    relay_markers = ("tell ", "ask ", "message ", "伝えて", "伝えます", "と言って", "と言い")
-    if any(marker in raw_text.lower() for marker in relay_markers):
+    if _contains_relay_instruction(raw_text):
         return False
-    if any(
-        "".join(phrase.lower().split()) in compact
-        for phrase in MOVE_TO_PLAYER_NEGATIONS
-    ):
+    if _contains_move_to_player_negation(compact):
         return False
     return any(
         "".join(command.lower().split()) in compact
         for command in MOVE_TO_PLAYER_COMMANDS
     )
+
+
+def is_move_to_player_source_excluded(text: str) -> bool:
+    """元発話が伝言・否定なら、後段の言い換えを追従実行へ昇格させない。"""
+
+    raw_text = str(text or "")
+    compact = "".join(raw_text.lower().split())
+    if _contains_move_to_player_negation(compact):
+        return True
+    if not _contains_relay_instruction(raw_text):
+        return False
+    hints = (*MOVE_TO_PLAYER_COMMANDS, *MOVE_TO_PLAYER_HINTS)
+    return any("".join(hint.lower().split()) in compact for hint in hints)
 
 
 @dataclass
@@ -229,6 +260,12 @@ class ActionAnalyzer:
     def _has_move_to_player_intent(self, segments: Tuple[str, ...]) -> bool:
         """一般移動とプレイヤー追従を誤分類しないための追加判定。"""
 
+        if any(
+            _contains_relay_instruction(segment)
+            or _contains_move_to_player_negation(segment)
+            for segment in segments
+        ):
+            return False
         compact_segments = tuple(segment.replace(" ", "").replace("　", "").lower() for segment in segments)
         for segment in compact_segments:
             if any(
@@ -260,4 +297,8 @@ class ActionAnalyzer:
         return matches
 
 
-__all__ = ["ActionAnalyzer", "is_move_to_player_command"]
+__all__ = [
+    "ActionAnalyzer",
+    "is_move_to_player_command",
+    "is_move_to_player_source_excluded",
+]
