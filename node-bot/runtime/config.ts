@@ -97,6 +97,7 @@ export function resolveMinecraftVersionLabel(requestedVersionRaw: string | undef
  * 単一のインターフェースにまとめることで、DI によるテストが容易になる。
  */
 export interface BotRuntimeConfig {
+  forestryOwner: string;
   dockerDetected: boolean;
   minecraft: {
     host: string;
@@ -224,6 +225,7 @@ export function loadBotRuntimeConfig(
     },
     agentBridge: agentResolution,
     playerPositionBridge: playerPositionBridgeResolution,
+    forestryOwner: /^[A-Za-z0-9_]{3,16}$/.test(env.WOOD_OWNER ?? '') ? env.WOOD_OWNER! : '',
     moveGoalTolerance: moveGoalToleranceResolution,
     skills: {
       historyPath: skillHistoryPath,

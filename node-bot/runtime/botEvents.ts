@@ -17,6 +17,7 @@ import type { FoodDictionary, PerceptionSnapshot } from './snapshots.js';
 type MovementConstructor = new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
 
 export interface BotEventDependencies {
+  handleWoodChat?: (bot: Bot, username: string, message: string) => Promise<boolean>;
   agentControlWebsocketUrl: string;
   currentPositionKeywords: string[];
   primaryAgentId: string;
@@ -194,7 +195,10 @@ export function createBotEventHandlers(deps: BotEventDependencies) {
       if (username === targetBot.username) return;
       // チャット本文やプレイヤー識別子を公開ログへ残さず、転送のみ行う。
       console.info('[Chat] received message', { messageLength: message.length });
-      void chatBridge.handleIncomingChat(targetBot, username, message);
+      void (async () => {
+        if (await deps.handleWoodChat?.(targetBot, username, message)) return;
+        await chatBridge.handleIncomingChat(targetBot, username, message);
+      })().catch(() => console.warn('[Chat] command handling failed'));
     });
 
     targetBot.on('error', (error: Error & { code?: string }) => {

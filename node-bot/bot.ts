@@ -16,6 +16,7 @@ import { startCommandServer, summarizeGatherStatusResponse } from './runtime/ser
 import { runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
 import { NavigationController } from './runtime/navigationController.js';
 import { PlayerPositionBridgeClient } from './runtime/playerPositionBridge.js';
+import { FileWoodStore, ForestryClient, WoodService } from './runtime/forestry.js';
 import { createEquipItemCommandHandler } from './runtime/commands/equipItemCommand.js';
 import { createSkillCommandHandlers } from './runtime/commands/skillCommands.js';
 import { createStatusCommandHandlers } from './runtime/commands/statusCommands.js';
@@ -132,7 +133,11 @@ async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
 
 let perceptionSnapshotBuilder: ((targetBot: Bot, reason: string) => PerceptionSnapshot | null) | null = null;
 
+const woodService = new WoodService({ owner: configValues.runtime.forestryOwner, getBot: getActiveBot,
+  store: new FileWoodStore(), guard: new ForestryClient(playerPositionBridge.baseUrl, playerPositionBridge.apiKey) });
+
 const { registerBotEventHandlers } = createBotEventHandlers({
+  handleWoodChat: (bot, username, message) => woodService.handleChat(bot, username, message),
   agentControlWebsocketUrl,
   currentPositionKeywords: CURRENT_POSITION_KEYWORDS,
   primaryAgentId: PRIMARY_AGENT_ID,
@@ -233,6 +238,9 @@ startCommandServer({ host: websocket.host, port: websocket.port }, { tracer, exe
 // 将来的にコマンド種別が増えても見通しよく拡張できるよう、switch 文で分岐させる。
 async function executeCommand(payload: CommandPayload): Promise<CommandResponse> {
   const { type, args, meta } = payload;
+  if (woodService.busy && !['chat', 'gatherStatus', 'gatherVptObservation'].includes(type)) {
+    return { ok: false, error: 'wood_collection_busy' };
+  }
   const directiveMeta = typeof meta === 'object' && meta !== null ? meta : undefined;
 
   if (directiveMeta) {
