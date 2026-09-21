@@ -16,6 +16,7 @@ from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from planner import (  # type: ignore  # noqa: E402
     ActionDirective,
+    PlanArguments,
     PlanOut,
     ReActStep,
     get_plan_priority,
@@ -68,6 +69,13 @@ class NoOpActions:
         max_targets: int,
     ) -> Dict[str, Any]:
         return {"ok": True, "ores": list(ore_names)}
+
+@pytest.fixture(autouse=True)
+def stub_barrier_notification(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_barrier(_: str, __: str, ___: Dict[str, Any]) -> str:
+        return "移動に失敗しました。"
+
+    monkeypatch.setattr("perception_service.compose_barrier_notification", fake_barrier)
 
 @pytest.fixture
 def orchestrator_with_failure() -> AgentOrchestrator:
@@ -313,7 +321,12 @@ def test_react_loop_logs_observations(
 
 def test_unified_graph_success(monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator) -> None:
     async def stub_plan(_: str, __: Dict[str, Any]) -> PlanOut:
-        return PlanOut(plan=["南へ移動"], resp="了解しました。", intent="move")
+        return PlanOut(
+            plan=["南へ移動"],
+            resp="了解しました。",
+            intent="move",
+            arguments=PlanArguments(coordinates={"x": 0, "y": 64, "z": 1}),
+        )
 
     monkeypatch.setattr(sys.modules["planner"], "plan", stub_plan)
     monkeypatch.setattr(sys.modules["runtime.action_graph"], "plan", stub_plan)
