@@ -123,6 +123,7 @@ export interface LocalPlan {
   reached: boolean;
   expanded: number;
   unknown: boolean;
+  frontierCandidates: number;
 }
 
 /** 観測済みの歩行面を自前のA*で探索。未知領域へは踏み込まず、到達済みの前縁で再観測する。 */
@@ -133,7 +134,7 @@ export function planLocalRoute(terrain: LocalTerrain, origin: LocalPosition, tar
   const start: Node = { p: origin, g: 0, f: distance(origin, target) };
   const open = [start];
   const scores = new Map([[pointKey(origin), 0]]);
-  let best = start, reached = false, expanded = 0;
+  let best = start, reached = false, expanded = 0, frontierCandidates = 0;
   const progress = (n: Node) => distance(n.p, target) + (visits.get(key(n.p)) ?? 0) * 2;
   while (open.length && expanded < MAX_NODES && !terrain.exhausted && Date.now() < deadlineAt) {
     let index = 0;
@@ -141,7 +142,11 @@ export function planLocalRoute(terrain: LocalTerrain, origin: LocalPosition, tar
     const node = open.splice(index, 1)[0];
     if (node.g !== scores.get(pointKey(node.p))) continue;
     expanded++;
-    if (progress(node) < progress(best)) best = node;
+    // 未到達の部分経路は探索範囲の実際の前縁だけに限る。内側の「近い床」を
+    // 前縁と扱うと、別の高さにある到達不能な対象の下を延々と巡回してしまう。
+    const frontier = Math.abs(node.p.x - origin.x) >= RADIUS - 1 || Math.abs(node.p.z - origin.z) >= RADIUS - 1;
+    if (frontier) frontierCandidates++;
+    if (frontier && progress(node) < progress(best)) best = node;
     if (distance(node.p, target) <= stopDistance) { best = node; reached = true; break; }
     const centered = { x: Math.floor(node.p.x) + 0.5, z: Math.floor(node.p.z) + 0.5 };
     const columns = [[centered.x + 1, centered.z], [centered.x - 1, centered.z],
@@ -161,7 +166,7 @@ export function planLocalRoute(terrain: LocalTerrain, origin: LocalPosition, tar
   }
   const path: LocalPosition[] = [];
   while (best.parent) { path.unshift(best.p); best = best.parent; }
-  return { path, reached, expanded, unknown: terrain.unknown };
+  return { path, reached, expanded, unknown: terrain.unknown, frontierCandidates };
 }
 
 function hostileNear(bot: Bot, p: LocalPosition): boolean {
@@ -286,6 +291,8 @@ export async function navigateLocally(bot: Bot, options: {
       if (hostileNear(bot, origin) || hostileNear(bot, target.position)) return fail('rendezvous_hazard_blocked');
       if (distance(origin, target.position) <= options.stopDistance) { event('stopped', 'arrived'); return { ok: true }; }
       const route = planLocalRoute(terrain, origin, target.position, options.stopDistance, blocked, visits, p => hostileNear(bot, p), options.deadlineAt);
+      console.info('[LocalNavigation]', { event: 'search_summary', expanded: route.expanded,
+        frontierCandidates: route.frontierCandidates, reached: route.reached, unknown: route.unknown });
       event('planned', route.reached ? 'route' : 'frontier', route.path.length);
       if (Date.now() >= options.deadlineAt) return fail('rendezvous_timeout');
       const next = route.path[0];

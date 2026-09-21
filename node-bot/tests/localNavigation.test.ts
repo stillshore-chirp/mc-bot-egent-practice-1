@@ -63,6 +63,18 @@ describe('local terrain and own route search', () => {
     expect(route.path.every(p => Math.abs(p.x - 0.5) <= 12)).toBe(true);
     expect(route.expanded).toBeLessThanOrEqual(2048);
   });
+
+  it('経路がない上階の対象に対して内側の床を前縁と誤認しない', async () => {
+    const f = physicsFixture();
+    f.target.position.set(4.5, 68, 0.5);
+    const route = planLocalRoute(new LocalTerrain(f.bot), f.entity.position, f.target.position, 2);
+    expect(route.reached).toBe(false);
+    expect(route.path).toEqual([]);
+    const result = await navigateLocally(f.bot, { stopDistance: 2, deadlineAt: Date.now() + 60000,
+      current: () => true, target: async () => ({ ok: true, position: f.target.position.clone() }) });
+    expect(result).toEqual({ ok: false, error: 'rendezvous_no_path' });
+    expect(f.bot.setControlState).not.toHaveBeenCalled();
+  });
 });
 
 describe('basic controls with installed Minecraft physics', () => {

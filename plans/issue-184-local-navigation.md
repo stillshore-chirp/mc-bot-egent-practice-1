@@ -24,9 +24,9 @@
 | --- | --- | --- |
 | 実ログと要件の確認 | Done | 旧方式はgoto開始→controller timer→停止→goto拒否終了 |
 | 自前探索・基本操作・排他と契約テスト | Done | インストール済み実物理・実block定義で確認 |
-| local build/test・反証レビュー | Done | Node 24 files / 214 tests（sourceと生成JSの両方）、build成功 |
-| PR・CI・review | In progress | 最初の実装commitで非Draft PRを公開する |
-| Bot反映・実ゲーム再実行 | In progress | Botのみ再起動、直前の呼びかけ1回の再実行をユーザーが許可 |
+| local build/test・反証レビュー | Done | Node 24 files / 216 tests（sourceと生成JSの両方）、build成功 |
+| PR・CI・review | In progress | PR #190。初回HEADのCI全3件成功、review/thread/commentなし。追加修正を検証する |
+| Bot反映・実ゲーム再実行 | In progress | 初回実行は移動したが256歩で停止、体力減少なし。追加1回の許可を照会中 |
 
 ## 検証と反証
 - `bash scripts/run-node-bot.sh build`
@@ -34,6 +34,7 @@
 - `git diff --check`
 - 回帰: 壁迂回、実階段/ハーフ床、一段上り下り、液体/未知/落下/低天井、動的障害、詰まり、physics停止、話者移動/離脱、接続/dimension変更、操作排他、Bridge期限、公開ログ非漏洩。
 - 実物理テスト中に、下りの正常な浮きを足場喪失と誤判定する条件を検出して修正。未知空間を安全とみなす緩和はしていない。
+- 実ゲームでは到達できず歩数上限で停止。コードと回帰テストで、未到達時に探索範囲の内側の床を前縁と誤認する巡回条件を確認・修正した。実地形で到達経路がない理由は未特定。追加のsearch_summaryで展開数・前縁候補数・到達可否・未知有無を固定schemaで記録する。
 - 一回の探索は水平各軸12・上下6、2048展開/24000読取り。一歩4秒、詰まり約1.2秒、最大8失敗/256歩、全体180秒。
 - UI状態: 受付→移動/再計画→到達または既存の一意な停止通知。画面・チャット文言・操作要素は変更なし。noviceの回復案内、熟練者の呼びかけ操作、アクセシビリティ・視覚階層に新規変更なし。実チャット表示はlive確認対象。
 - Python/Bridgeコードは変更しない。契約維持はNode回帰とCIで確認する。
