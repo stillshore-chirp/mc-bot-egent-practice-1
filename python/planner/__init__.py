@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from llm.client import (
     AsyncOpenAI,
     call_responses_api,
+    create_async_openai_client,
     log_response_outcome,
 )
 from .graph import (
@@ -47,18 +48,28 @@ logger = setup_logger("planner")
 
 _PLANNER_CONFIG = load_planner_config()
 _PRIORITY_MANAGER = PlanPriorityManager(_PLANNER_CONFIG)
+_ORIGINAL_ASYNC_OPENAI = AsyncOpenAI
 
 
 def _default_async_client_factory() -> AsyncOpenAI:
     """AsyncOpenAI の生成を共通化し、テスト時はモックへ差し替えやすくする。"""
 
+    # 既存テストは `planner.AsyncOpenAI` または共有 openai module の
+    # `AsyncOpenAI` を差し替える。通常時は共通factoryにSDKの解決を任せ、
+    # planner側のエイリアスだけが差し替えられた場合だけ明示注入する。
+    client_class = (
+        AsyncOpenAI if AsyncOpenAI is not _ORIGINAL_ASYNC_OPENAI else None
+    )
     try:
-        if _PLANNER_CONFIG.api_key or _PLANNER_CONFIG.base_url:
-            return openai.AsyncOpenAI(api_key=_PLANNER_CONFIG.api_key, base_url=_PLANNER_CONFIG.base_url)
-        return openai.AsyncOpenAI()
+        if client_class is None:
+            return create_async_openai_client(_PLANNER_CONFIG)
+        return create_async_openai_client(
+            _PLANNER_CONFIG,
+            client_class=client_class,
+        )
     except TypeError:
-        # pytest のモックで引数を受け付けない場合にも備える。
-        return openai.AsyncOpenAI()
+        # 引数を受け付けない既存テストダブルとの互換性を維持する。
+        return (client_class or openai.AsyncOpenAI)()
 
 
 _ASYNC_CLIENT_FACTORY = _default_async_client_factory
