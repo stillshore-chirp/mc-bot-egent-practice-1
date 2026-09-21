@@ -61,6 +61,10 @@ export function createCoreCommandHandlers(deps: CoreCommandDependencies) {
     if (normalizedOres.length === 0) {
       normalizedOres.push('redstone_ore', 'deepslate_redstone_ore');
     }
+    // LLMの別名解釈が通常採掘へ流れても、木材収集の履歴確認を迂回させない。
+    if (normalizedOres.some(name => /_(log|wood|planks|stem|hyphae)$/.test(name))) {
+      return { ok: false, error: 'wood_collection_required: use !wood collect for protected wood collection' };
+    }
 
     const scanRadiusRaw = Number(args.scanRadius);
     const scanRadius = Number.isFinite(scanRadiusRaw) && scanRadiusRaw > 0

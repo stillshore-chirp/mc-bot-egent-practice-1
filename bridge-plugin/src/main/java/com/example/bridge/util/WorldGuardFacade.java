@@ -29,6 +29,12 @@ public final class WorldGuardFacade {
         return WorldGuard.getInstance() != null;
     }
 
+    /** 伐採は所有権にかかわらず登録regionを避ける。照会不能は呼出側で拒否する。 */
+    public boolean isUnclaimed(World world, BlockVector3 position) throws Exception {
+        RegionManager manager = requireManager(world);
+        return manager.getRegion("__global__") == null && manager.getApplicableRegions(position).size() == 0;
+    }
+
     public void upsertRegion(MiningJob job, String regionName) throws Exception {
         MiningJob.Frontier frontier = job.window();
         RegionManager manager = requireManager(job.world());

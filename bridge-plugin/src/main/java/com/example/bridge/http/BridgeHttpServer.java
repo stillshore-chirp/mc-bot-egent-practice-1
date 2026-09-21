@@ -93,6 +93,7 @@ public final class BridgeHttpServer {
     }
 
     private void registerContexts(HttpServer server) {
+        server.createContext("/v1/forestry/check", new com.example.bridge.http.handlers.ForestryHandler(plugin, config, mapper, logger, eventHub));
         server.createContext(
                 "/v1/health",
                 new HealthHandler(plugin, config, mapper, logger, eventHub, worldGuardFacade, coreProtectFacade));

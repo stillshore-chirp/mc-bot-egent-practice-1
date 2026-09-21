@@ -19,6 +19,9 @@ import org.bukkit.plugin.java.JavaPlugin;
  */
 public final class AgentBridgePlugin extends JavaPlugin {
 
+    private com.example.bridge.forestry.ForestryGuard forestry;
+    public com.example.bridge.forestry.ForestryGuard forestry() { return forestry; }
+
     private AgentBridgeConfig bridgeConfig;
     private BridgeHttpServer httpServer;
     private JobRegistry jobRegistry;
@@ -26,6 +29,8 @@ public final class AgentBridgePlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        forestry = new com.example.bridge.forestry.ForestryGuard(this, new WorldGuardFacade(getLogger()));
+        getServer().getPluginManager().registerEvents(forestry, this);
         reloadBridgeConfig();
         if (getCommand("agentbridge") != null) {
             getCommand("agentbridge").setExecutor(this);

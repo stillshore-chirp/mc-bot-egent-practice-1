@@ -6,6 +6,12 @@ import {
 } from '../runtime/commands/coreCommands.js';
 
 describe('core command chat logging', () => {
+  it.each(['oak_log','stripped_birch_log','oak_wood','spruce_planks','crimson_stem','warped_hyphae'])('通常採掘で%sの木材保護を迂回させない',async name=>{
+    const getActiveBot=vi.fn();
+    const handlers=createCoreCommandHandlers({getActiveBot} as unknown as CoreCommandDependencies);
+    expect((await handlers.handleMineOreCommand({ores:[name]})).ok).toBe(false);
+    expect(getActiveBot).not.toHaveBeenCalled();
+  });
   it('送信本文をログへ出さず、長さだけを記録する', () => {
     const message = 'player secret message';
     const sendChat = vi.fn(() => true);
