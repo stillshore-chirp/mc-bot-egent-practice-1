@@ -25,8 +25,9 @@
 | 実ログと要件の確認 | Done | 旧方式はgoto開始→controller timer→停止→goto拒否終了 |
 | 自前探索・基本操作・排他と契約テスト | Done | インストール済み実物理・実block定義で確認 |
 | local build/test・反証レビュー | Done | Node 24 files / 216 tests（sourceと生成JSの両方）、build成功 |
-| PR・CI・review | In progress | PR #190。初回HEADのCI全3件成功、review/thread/commentなし。追加修正を検証する |
-| Bot反映・実ゲーム再実行 | In progress | 初回実行は移動したが256歩で停止、体力減少なし。追加1回の許可を照会中 |
+| PR・CI・review | Done | PR #190。追加修正3bdd536のCI全3件成功、review/thread/commentなし。自己反証レビュー実施 |
+| Bot反映 | Done | Botのみ追加修正版へ再起動。位置・所持品・一般・周辺状態の取得成功。Paper/Python変更なし |
+| 実ゲーム到達確認 | Blocked | 初回実行は移動したが256歩で停止、体力減少なし。追加1回の許可を照会中 |
 
 ## 検証と反証
 - `bash scripts/run-node-bot.sh build`
@@ -54,4 +55,4 @@
 - rollbackはBotのみ前のマウントへ戻す。Paper/Python/world設定を変更しない。
 
 ## 停止時の状態
-In progress。Bot反映と許可済み実ゲーム再実行へ進む。
+Blocked: 到達成功は未確認。追加修正版は稼働中で、既に承認された1回の移動は実施済み。追加実行の許可、またはユーザー自身の再呼びかけを待ち、固定探索ログと結果を確認する。追加の移動命令は出していない。実チャットからの一連の表示も未検証。
