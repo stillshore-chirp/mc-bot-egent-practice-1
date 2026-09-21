@@ -13,6 +13,8 @@
 
 新しいクライアントを古いサーバーへ接続する方向なので、ViaBackwardsは追加しません。Composeの`bridge`は`MODRINTH_PROJECTS=viaversion:5.12.0`でViaVersionの版を固定します。`MC_VERSION`はPaperとBotの共通版で、**26.1に変更しません**。既存の`.env`に値がある場合は`MC_VERSION=1.21.11`を確認してください。26.1系への対応範囲は[ViaVersionの版定義](https://github.com/ViaVersion/ViaVersion/blob/master/api/src/main/java/com/viaversion/viaversion/api/protocol/version/ProtocolVersion.java)と[5.12.0リリース](https://github.com/ViaVersion/ViaVersion/releases/tag/5.12.0)を参照してください。Composeのプラグイン指定方法は[itzgの公式文書](https://github.com/itzg/docker-minecraft-server/blob/master/docs/mods-and-plugins/modrinth.md)に従います。
 
+Botの依存ライブラリに含まれる`minecraft-protocol`は26.1をサポートしていません。`minecraft-data`の版一覧だけを根拠に26.1をBotへ渡さず、両ライブラリが対応する1.21.11へフォールバックします。
+
 ## 適用境界
 
 リポジトリのCompose設定を変更しても、すでに稼働しているPaperにはViaVersionは読み込まれません。既存サーバーへ反映する際は、ワールドのバックアップ、プラグインの導入、計画したサーバー再起動、版と接続の再確認が必要です。この作業で稼働中サーバーの更新や再起動は実施しません。

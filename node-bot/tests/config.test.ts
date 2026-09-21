@@ -21,6 +21,12 @@ describe('resolveMinecraftVersionLabel', () => {
     expect(result.warnings.length).toBeGreaterThan(0);
   });
 
+  it('minecraft-dataに記載されてもプロトコル未対応の26.1はBotへ渡さない', () => {
+    const result = resolveMinecraftVersionLabel('26.1');
+    expect(result.version).toBe('1.21.11');
+    expect(result.warnings.length).toBeGreaterThan(0);
+  });
+
   it('未設定時はサーバーと同じ1.21.11を既定値にする', () => {
     const result = resolveMinecraftVersionLabel(undefined);
     expect(result.version).toBe('1.21.11');
