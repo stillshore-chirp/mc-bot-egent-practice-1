@@ -180,7 +180,7 @@ export class WoodService {
         try {
           preview=await bounded(bot.openContainer(destination),5000,()=>{if(bot.currentWindow)bot.closeWindow(bot.currentWindow);});
           if(preview.firstEmptyContainerSlot()===null) throw new Error('chest_unavailable');
-        } finally { preview?.close();release(); }
+        } finally { try { preview?.close(); } finally { release(); } }
         this.check(bot);
         state.pending=true;state.baseline=cargoCounts(bot);state.trail=[readLocalPosition(bot.entity.position)!];await this.save();
         this.say(bot,'自然成長の履歴と周囲を確認しながら木材を探索します。判定できない木は伐採しません。!wood stop で停止できます。');
@@ -243,7 +243,7 @@ export class WoodService {
         await bounded(bot.dig(b,true),10000,()=>bot.stopDigging());this.check(bot);
         if(bot.blockAt(b.position)?.name===b.name) throw new Error('changed');
       }
-    } finally { bot.stopDigging();release(); }
+    } finally { try { bot.stopDigging(); } finally { release(); } }
   }
   private async pickup(bot: Bot, root: LocalPosition) {
     // 原木破壊直後の落下を待ってから、観測できた近傍itemへ基本操作で近づく。
@@ -280,15 +280,15 @@ export class WoodService {
         stored+=count;await this.save();
       }
       if(Object.keys(cargoDelta(cargoCounts(bot),state.baseline)).length) throw new Error('storage_incomplete');
-      state.pending=false;state.trail=[];await this.save();this.report(bot,'idle');
-      this.say(bot,stored>0 ? `帰還し、収集物${stored}個を登録チェストに収納しました。` : '帰還しました。今回収納できる収集物はありません。履歴不明の木は伐採していません。');
-    } finally { chest?.close();release(); }
+    } finally { try { chest?.close(); } finally { release(); } }
+    state.pending=false;state.trail=[];await this.save();this.report(bot,'idle');
+    this.say(bot,stored>0 ? `帰還し、収集物${stored}個を登録チェストに収納しました。` : '帰還しました。今回収納できる収集物はありません。履歴不明の木は伐採していません。');
   }
 }
 async function bounded<T>(operation: Promise<T>, ms: number, cancel: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   let expired=false;
   void operation.then(()=>{if(expired) cancel();},()=>{}).catch(()=>{});
-  try { return await Promise.race([operation,new Promise<never>((_,reject)=> { timer=setTimeout(()=>{expired=true;try {cancel();} finally {reject(new Error('storage_incomplete'));}},ms); })]); }
+  try { return await Promise.race([operation,new Promise<never>((_,reject)=> { timer=setTimeout(()=>{expired=true;try {cancel();} catch { /* 切断後のcancel失敗をtimerからthrowしない。 */ } finally {reject(new Error('storage_incomplete'));}},ms); })]); }
   finally { clearTimeout(timer!); }
 }

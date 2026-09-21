@@ -3,6 +3,7 @@ import { Vec3 } from 'vec3';
 import { WoodService, ForestryClient, cargoDelta, explorationPoints, type WoodState } from '../runtime/forestry.js';
 import { physicsFixture } from './localNavigationFixture.js';
 import { navigateLocally } from '../runtime/localNavigation.js';
+import { acquireMovementControl } from '../runtime/movementControl.js';
 vi.mock('../runtime/localNavigation.js', async original => ({ ...await original<typeof import('../runtime/localNavigation.js')>(),
   navigateLocally: vi.fn(async (bot, options) => { const t=await options.target();bot.entity.position.set(t.position.x,t.position.y,t.position.z);return {ok:true}; }) }));
 afterEach(()=>vi.clearAllMocks());
@@ -90,6 +91,12 @@ describe('safe forestry workflow',()=>{
   it('特殊データ付きの木材を通常木材と混同して格納しない',async()=>{
     const f=fixture(true);f.items[0].count=8;Object.assign(f.items[0],{nbt:{customName:'example'}});
     await f.service.handleChat(f.bot,'player','!wood return');await finish(f);expect(f.deposit).not.toHaveBeenCalled();
+  });
+  it('チェストのclose失敗でも操作所有権を解放する',async()=>{
+    const f=fixture(true);f.items[0].count=8;f.close.mockImplementation(()=>{throw new Error('closed');});
+    await f.service.handleChat(f.bot,'player','!wood return');await finish(f);
+    expect(f.saves.at(-1)?.pending).toBe(true);
+    const release=acquireMovementControl(f.bot);expect(release).not.toBeNull();release?.();
   });
   it('記録解除は明示確認が必要で物品を変更しない',async()=>{
     const f=fixture(true);await f.service.handleChat(f.bot,'player','!wood reset');expect(f.saves).toHaveLength(0);
