@@ -549,6 +549,31 @@ async def test_plan_graph_sets_structured_parse_error_code_on_schema_mismatch() 
 
 
 @pytest.mark.anyio
+async def test_plan_graph_schema_error_logs_only_safe_code_not_model_input(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """schema errorの例外stackにもLLM出力本文を残さない。"""
+
+    caplog.set_level(logging.INFO, logger="planner.graph")
+    result = await _invoke_graph_with_output_state(
+        "",
+        response_attrs={
+            "output_parsed": {
+                "plan": "AlexSecret private relay",
+                "resp": "確認してください",
+            }
+        },
+    )
+
+    assert result.get("parse_error_code") == "structured_output_schema_mismatch"
+    messages = [record.getMessage() for record in caplog.records]
+    assert all("AlexSecret" not in message for message in messages)
+    assert all("private relay" not in message for message in messages)
+    assert all("input_value" not in message for message in messages)
+    assert any("structured_output_schema_mismatch" in message for message in messages)
+
+
+@pytest.mark.anyio
 async def test_plan_graph_sets_json_parse_error_code_on_invalid_output() -> None:
     result = await _invoke_graph_with_output_state("not-json")
     assert result.get("parse_error_code") == "plan_json_decode_failed"

@@ -514,10 +514,10 @@ def build_plan_graph(
                             error=secondary_exc.__class__.__name__,
                         )
                         parse_error_code = _classify_plan_parse_error(secondary_exc, used_structured_output=False)
-                        logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
+                        logger.warning("plan graph failed to parse JSON plan (%s)", parse_error_code)
                         priority = await manager.mark_failure()
                         result = {
-                            "parse_error": str(secondary_exc),
+                            "parse_error": parse_error_code,
                             "parse_error_code": parse_error_code,
                             "priority": priority,
                         }
@@ -527,7 +527,7 @@ def build_plan_graph(
                                 step_label="parse_plan",
                                 inputs={"content_chars": len(raw_content)},
                                 outputs={"priority": priority, "parse_error_code": parse_error_code},
-                                error=str(secondary_exc),
+                                error=parse_error_code,
                             )
                         )
                         return result
@@ -538,10 +538,10 @@ def build_plan_graph(
                         error=primary_exc.__class__.__name__,
                     )
                     parse_error_code = _classify_plan_parse_error(primary_exc, used_structured_output=False)
-                    logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
+                    logger.warning("plan graph failed to parse JSON plan (%s)", parse_error_code)
                     priority = await manager.mark_failure()
                     result = {
-                        "parse_error": str(primary_exc),
+                        "parse_error": parse_error_code,
                         "parse_error_code": parse_error_code,
                         "priority": priority,
                     }
@@ -551,7 +551,7 @@ def build_plan_graph(
                             step_label="parse_plan",
                             inputs={"content_chars": len(raw_content)},
                             outputs={"priority": priority, "parse_error_code": parse_error_code},
-                            error=str(primary_exc),
+                            error=parse_error_code,
                         )
                     )
                     return result
@@ -562,10 +562,10 @@ def build_plan_graph(
                     error=primary_exc.__class__.__name__,
                 )
                 parse_error_code = _classify_plan_parse_error(primary_exc, used_structured_output=True)
-                logger.exception("plan graph failed to parse structured plan (%s)", parse_error_code)
+                logger.warning("plan graph failed to parse structured plan (%s)", parse_error_code)
                 priority = await manager.mark_failure()
                 result = {
-                    "parse_error": str(primary_exc),
+                    "parse_error": parse_error_code,
                     "parse_error_code": parse_error_code,
                     "priority": priority,
                 }
@@ -575,7 +575,7 @@ def build_plan_graph(
                         step_label="parse_plan",
                         inputs={"content_chars": len(raw_content), "used_structured_output": True},
                         outputs={"priority": priority, "parse_error_code": parse_error_code},
-                        error=str(primary_exc),
+                        error=parse_error_code,
                     )
                 )
                 return result
@@ -762,9 +762,9 @@ def build_plan_graph(
 
     async def fallback_plan(state: UnifiedPlanState) -> Dict[str, Any]:
         logger.warning(
-            "plan fallback triggered parse_error=%s llm_error=%s",
+            "plan fallback triggered parse_error=%s llm_error_present=%s",
             state.get("parse_error"),
-            state.get("llm_error"),
+            bool(state.get("llm_error")),
         )
         fallback = state.get("fallback_plan_out")
         if not isinstance(fallback, PlanOut):
@@ -774,7 +774,10 @@ def build_plan_graph(
             record_structured_step(
                 state,
                 step_label="fallback_plan",
-                inputs={"parse_error": state.get("parse_error"), "llm_error": state.get("llm_error")},
+                inputs={
+                    "parse_error": state.get("parse_error"),
+                    "llm_error_present": bool(state.get("llm_error")),
+                },
                 outputs={"plan_steps": len(fallback.plan)},
             )
         )
