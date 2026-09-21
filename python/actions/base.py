@@ -63,6 +63,7 @@ class ActionDispatcher:
         if self._current_directive_meta:
             wire_payload["meta"] = dict(self._current_directive_meta)
         is_follow_player = command == "followPlayer"
+        is_sensitive_command = command in {"followPlayer", "say"}
         if is_follow_player and self._worker_task_timeout_seconds < FOLLOW_PLAYER_MIN_WORKER_TIMEOUT_SECONDS:
             self.logger.warning(
                 "followPlayer skipped because worker timeout is too short; command_id=%d",
@@ -72,7 +73,7 @@ class ActionDispatcher:
                 "ok": False,
                 "error": "rendezvous_worker_timeout_mismatch",
             }
-        safe_log_payload = {"type": "followPlayer"} if is_follow_player else wire_payload
+        safe_log_payload = {"type": command} if is_sensitive_command else wire_payload
         log_structured_event(
             self.logger,
             "dispatch prepared",
@@ -87,13 +88,13 @@ class ActionDispatcher:
                 recv_timeout=FOLLOW_PLAYER_RECV_TIMEOUT_SECONDS if is_follow_player else None,
             )
         except Exception as error:  # noqa: BLE001 - 送信失敗はそのまま上位へ伝搬させる
-            failure_payload = {"type": "followPlayer"} if is_follow_player else wire_payload
+            failure_payload = {"type": command} if is_sensitive_command else wire_payload
             failure_kwargs: Dict[str, Any] = {
                 "level": logging.ERROR,
                 "event_level": "fault",
                 "context":{"command": command, "command_id": command_id, "payload": failure_payload},
             }
-            if not is_follow_player:
+            if not is_sensitive_command:
                 failure_kwargs["exc_info"] = error
             log_structured_event(
                 self.logger,
@@ -104,7 +105,7 @@ class ActionDispatcher:
 
         elapsed = time.perf_counter() - started_at
         event_level = "success" if resp.get("ok") else "fault"
-        safe_response = {"ok": bool(resp.get("ok"))} if is_follow_player else resp
+        safe_response = {"ok": bool(resp.get("ok"))} if is_sensitive_command else resp
         log_structured_event(
             self.logger,
             "dispatch completed",

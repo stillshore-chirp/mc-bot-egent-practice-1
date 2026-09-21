@@ -54,9 +54,7 @@ class ChatQueue:
             await self._handle_queue_overflow(task)
         await self.queue.put(task)
         self.logger.info(
-            "chat task enqueued username=%s message=%s queue_size=%d",
-            username,
-            message,
+            "chat task enqueued category=chat queue_size=%d",
             self.queue.qsize(),
         )
 
@@ -77,8 +75,7 @@ class ChatQueue:
                 )
                 elapsed = time.perf_counter() - started_at
                 self.logger.info(
-                    "worker processed username=%s duration=%.3fs remaining_queue=%d",
-                    task.username,
+                    "worker processed category=chat duration=%.3fs remaining_queue=%d",
                     elapsed,
                     self.queue.qsize(),
                 )
@@ -90,7 +87,7 @@ class ChatQueue:
                     level=logging.WARNING,
                     event_level="warning",
                     context={
-                        "username": task.username,
+                        "category": "chat",
                         "duration_sec": round(elapsed, 3),
                         "timeout_limit_sec": self._task_timeout_seconds,
                         "retry_count": task.retry_count,
@@ -104,8 +101,7 @@ class ChatQueue:
                         await self._handle_queue_overflow(task)
                     await self.queue.put(task)
                     self.logger.warning(
-                        "chat task timeout requeued username=%s retry=%d",
-                        task.username,
+                        "chat task timeout requeued category=chat retry=%d",
                         task.retry_count,
                     )
                 else:
@@ -113,12 +109,11 @@ class ChatQueue:
                         "処理が長時間停止したため、この指示をスキップしました。最新の指示を優先します。"
                     )
                     self.logger.error(
-                        "chat task timeout dropped username=%s retry_limit=%d",
-                        task.username,
+                        "chat task timeout dropped category=chat retry_limit=%d",
                         self._timeout_retry_limit,
                     )
             except Exception:
-                self.logger.exception("failed to process chat task username=%s", task.username)
+                self.logger.exception("failed to process chat task category=chat")
             finally:
                 self.queue.task_done()
 
@@ -142,8 +137,8 @@ class ChatQueue:
                 "policy": "drop_oldest",
                 "queue_size": self.queue.qsize(),
                 "queue_max_size": self.queue.maxsize,
-                "incoming_username": incoming.username,
-                "dropped_username": getattr(dropped, "username", None),
+                "incoming_category": "chat",
+                "dropped_category": "chat" if dropped is not None else None,
             },
         )
         await self._say(

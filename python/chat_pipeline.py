@@ -32,6 +32,7 @@ class ChatPipeline:
 
         agent = self._agent
         deterministic_move_to_player = is_move_to_player_command(task.message)
+        source_excluded_move_to_player = is_move_to_player_source_excluded(task.message)
         agent.memory.set("last_requester", task.username)
         failures = await agent.status_service.prime_status_for_planning()
         if failures:
@@ -56,6 +57,8 @@ class ChatPipeline:
         )
         if deterministic_move_to_player:
             agent.logger.info("deterministic route=move_to_player")
+        elif source_excluded_move_to_player:
+            agent.logger.info("deterministic route=blocked_source")
         else:
             agent.logger.info(
                 "creating plan for username=%s message='%s' context=%s",
@@ -82,9 +85,15 @@ class ChatPipeline:
             )
         else:
             plan_out = await plan(task.message, context)
-        if deterministic_move_to_player:
+        if source_excluded_move_to_player and plan_out.intent == "move_to_player":
+            # 伝言・否定をLLMがcome hereへ言い換えても、原文とrespを
+            # ActionGraph/ReActログへ渡さず、固定stepの安全拒否へ収束させる。
+            plan_out.plan = ["話者に合流する"]
+            plan_out.resp = ""
+        if deterministic_move_to_player or source_excluded_move_to_player:
             agent.logger.info(
-                "plan generated route=move_to_player steps=%d",
+                "plan generated route=%s steps=%d",
+                "move_to_player" if deterministic_move_to_player else "blocked_source",
                 len(plan_out.plan),
             )
         else:
@@ -114,17 +123,20 @@ class ChatPipeline:
         )
         if (
             should_relay_initial_response
-            and is_move_to_player_source_excluded(task.message)
+            and source_excluded_move_to_player
             and plan_out.intent == "move_to_player"
         ):
             # 元発話を後段が安全拒否する経路では、LLMの初期respを重ねない。
             should_relay_initial_response = False
         if should_relay_initial_response:
-            agent.logger.info(
-                "relaying llm response to player username=%s resp='%s'",
-                task.username,
-                plan_out.resp,
-            )
+            if source_excluded_move_to_player:
+                agent.logger.info("relaying response route=blocked_source")
+            else:
+                agent.logger.info(
+                    "relaying llm response to player username=%s resp='%s'",
+                    task.username,
+                    plan_out.resp,
+                )
             await agent.actions.say(plan_out.resp)
 
         agent.memory.set("_active_chat_message", task.message)

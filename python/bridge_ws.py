@@ -53,7 +53,7 @@ class BotBridge:
         run_id = uuid4().hex
         command_name = str(payload.get("type") or "unknown")
         effective_recv_timeout = self.recv_timeout if recv_timeout is None else recv_timeout
-        is_follow_player = command_name == "followPlayer"
+        is_sensitive_command = command_name in {"followPlayer", "say"}
         envelope = make_transport_envelope(
             source="python-agent",
             kind="command",
@@ -76,8 +76,8 @@ class BotBridge:
                     )
                     stage = "recv"
                     resp = await asyncio.wait_for(ws.recv(), timeout=effective_recv_timeout)
-                    if is_follow_player:
-                        logger.info("WS recv command=followPlayer ok=%s", _response_ok(resp))
+                    if is_sensitive_command:
+                        logger.info("WS recv command=%s ok=%s", command_name, _response_ok(resp))
                     else:
                         logger.info("WS recv: %s", resp)
                     return json.loads(resp)
@@ -90,7 +90,7 @@ class BotBridge:
                     "stage": stage,
                     "attempt": attempt,
                     "max_retries": self.max_retries,
-                    "payload": _safe_log_payload(envelope) if is_follow_player else envelope,
+                    "payload": _safe_log_payload(envelope) if is_sensitive_command else envelope,
                     "error_type": error_type,
                 }
                 log_kwargs: Dict[str, Any] = {
@@ -98,7 +98,7 @@ class BotBridge:
                     "event_level": event_level,
                     "context": failure_context,
                 }
-                if not is_follow_player:
+                if not is_sensitive_command:
                     log_kwargs["exc_info"] = error
                 log_structured_event(logger, "WS communication failed", **log_kwargs)
                 if should_retry:
@@ -114,7 +114,7 @@ class BotBridge:
                     "error": error_type,
                     "retries": attempt - 1,
                 }
-                if not is_follow_player:
+                if not is_sensitive_command:
                     result["message"] = str(error)
                 return result
 
@@ -143,6 +143,6 @@ def _response_ok(raw_response: str) -> bool:
 
 
 def _safe_log_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """followPlayerログから対象名・元payloadを除く。wire payload自体は変更しない。"""
+    """機微なcommandログから対象名・本文・元payloadを除く。"""
 
-    return {"type": "followPlayer"}
+    return {"type": str(payload.get("body", {}).get("type") or "sensitive")}

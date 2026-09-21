@@ -226,6 +226,7 @@ async def test_come_here_reaches_follow_player_once_through_real_orchestrator(
         "speaker さんに合流しました。",
     ]
     assert all("come here" not in record.getMessage() for record in caplog.records)
+    assert all("speaker" not in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.anyio
@@ -270,11 +271,13 @@ async def test_come_here_ack_precedes_safe_failure_notice(
 @pytest.mark.anyio
 async def test_relayed_chat_rephrased_as_come_here_cannot_follow_sender(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """元発話が伝言なら、LLMのcome here言い換え後もfollowPlayerへ進まない。"""
 
     actions = _IntegrationActions()
     orchestrator = AgentOrchestrator(actions, Memory())
+    caplog.set_level(logging.INFO)
 
     async def no_block_evaluations() -> None:
         return None
@@ -291,6 +294,9 @@ async def test_relayed_chat_rephrased_as_come_here_cannot_follow_sender(
     assert actions.say_messages == [
         "別のプレイヤーへの伝言または来訪を望まない発話として解釈されたため、合流を開始しません。直接呼びかける場合は「ここに来て」と送ってください。"
     ]
+    assert all("tell Alex to come here" not in record.getMessage() for record in caplog.records)
+    assert all("speaker" not in record.getMessage() for record in caplog.records)
+    assert all("Alex" not in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.anyio
