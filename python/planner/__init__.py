@@ -217,7 +217,7 @@ async def compose_barrier_notification(
     factory = client_factory or _ASYNC_CLIENT_FACTORY
     client = factory()
     prompt = build_barrier_prompt(step, reason, context)
-    logger.info(f"Barrier prompt: {prompt}")
+    logger.info("Barrier prompt prepared chars=%d", len(prompt))
 
     request_payload = _build_responses_payload(
         BARRIER_SYSTEM,
@@ -253,7 +253,7 @@ async def compose_barrier_notification(
         raise BarrierNotificationError(str(exc)) from exc
 
     content = _extract_output_text(resp)
-    logger.info(f"Barrier raw: {content}")
+    logger.info("Barrier output received chars=%d", len(content))
 
     refusal_text = extract_refusal_text(resp)
     if not content and refusal_text:

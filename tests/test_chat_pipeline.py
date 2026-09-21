@@ -13,6 +13,8 @@ from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from planner import PlanOut  # type: ignore  # noqa: E402
 from runtime.action_graph import ChatTask  # type: ignore  # noqa: E402
+from runtime.inventory_sync import InventorySynchronizer  # type: ignore  # noqa: E402
+from runtime.status_service import StatusService  # type: ignore  # noqa: E402
 
 
 class _Memory:
@@ -218,15 +220,15 @@ async def test_come_here_reaches_follow_player_once_through_real_orchestrator(
         no_block_evaluations,
     )
 
-    await orchestrator._process_chat(ChatTask("speaker", "come here"))
+    await orchestrator._process_chat(ChatTask("SpeakerSecret", "come here"))
 
-    assert actions.follow_calls == ["speaker"]
+    assert actions.follow_calls == ["SpeakerSecret"]
     assert actions.say_messages == [
         "呼びかけを受けました。合流できるか確認します。",
-        "speaker さんに合流しました。",
+        "SpeakerSecret さんに合流しました。",
     ]
     assert all("come here" not in record.getMessage() for record in caplog.records)
-    assert all("speaker" not in record.getMessage() for record in caplog.records)
+    assert all("SpeakerSecret" not in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.anyio
@@ -288,14 +290,14 @@ async def test_relayed_chat_rephrased_as_come_here_cannot_follow_sender(
     monkeypatch.setattr(orchestrator, "_collect_block_evaluations", no_block_evaluations)
     monkeypatch.setattr("chat_pipeline.plan", relayed_plan)
 
-    await orchestrator._process_chat(ChatTask("speaker", "tell Alex to come here"))
+    await orchestrator._process_chat(ChatTask("SpeakerSecret", "tell Alex to come here"))
 
     assert actions.follow_calls == []
     assert actions.say_messages == [
         "別のプレイヤーへの伝言または来訪を望まない発話として解釈されたため、合流を開始しません。直接呼びかける場合は「ここに来て」と送ってください。"
     ]
     assert all("tell Alex to come here" not in record.getMessage() for record in caplog.records)
-    assert all("speaker" not in record.getMessage() for record in caplog.records)
+    assert all("SpeakerSecret" not in record.getMessage() for record in caplog.records)
     assert all("Alex" not in record.getMessage() for record in caplog.records)
 
 
@@ -321,7 +323,7 @@ async def test_relayed_move_plan_suppresses_initial_resp_before_safe_rejection(
     monkeypatch.setattr(orchestrator, "_collect_block_evaluations", no_block_evaluations)
     monkeypatch.setattr("chat_pipeline.plan", relayed_plan)
 
-    await orchestrator._process_chat(ChatTask("speaker", "tell Alex to come here"))
+    await orchestrator._process_chat(ChatTask("SpeakerSecret", "tell Alex to come here"))
 
     assert actions.follow_calls == []
     assert actions.say_messages == [
@@ -347,4 +349,39 @@ def test_memory_sensitive_chat_values_are_redacted_from_logs(
     assert all("private context" not in message for message in messages)
     assert any("'category': 'chat_speaker'" in message for message in messages)
     assert any("'category': 'chat_source'" in message for message in messages)
+    assert any("'category': 'chat_record'" in message for message in messages)
+
+
+def test_context_snapshot_keeps_last_chat_but_redacts_it_from_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """前回チャットはplannerへ保持しつつ、snapshotログへ本文を出さない。"""
+
+    memory = Memory()
+    memory.set(
+        "last_chat",
+        {"username": "PreviousSecretPlayer", "message": "previous private context"},
+    )
+    service = StatusService(
+        actions=object(),
+        memory=memory,
+        inventory_sync=InventorySynchronizer(),
+        logger=logging.getLogger("test.status_service"),
+        status_timeout_seconds=1.0,
+        status_retry=0,
+        status_backoff_seconds=0.0,
+        structured_event_history_limit=3,
+        perception_history_limit=3,
+    )
+
+    with caplog.at_level(logging.INFO, logger="test.status_service"):
+        snapshot = service.build_context_snapshot(current_role_id="generalist")
+
+    assert snapshot["last_chat"] == {
+        "username": "PreviousSecretPlayer",
+        "message": "previous private context",
+    }
+    messages = [record.getMessage() for record in caplog.records]
+    assert all("PreviousSecretPlayer" not in message for message in messages)
+    assert all("previous private context" not in message for message in messages)
     assert any("'category': 'chat_record'" in message for message in messages)

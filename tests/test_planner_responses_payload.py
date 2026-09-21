@@ -191,6 +191,7 @@ async def _invoke_graph_with_output_state(
     output_text: str,
     output: list[object] | None = None,
     response_attrs: dict[str, object] | None = None,
+    user_msg: str = "test",
 ) -> dict[str, object]:
     config = _make_config()
     graph = build_plan_graph(
@@ -204,9 +205,29 @@ async def _invoke_graph_with_output_state(
         },
     )
 
-    result = await graph.ainvoke({"user_msg": "test", "context": {}, "structured_events": []})
+    result = await graph.ainvoke({"user_msg": user_msg, "context": {}, "structured_events": []})
     assert isinstance(result.get("plan_out"), PlanOut)
     return result
+
+
+@pytest.mark.anyio
+async def test_plan_graph_logs_redact_relay_source_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """伝言入力を実plannerへ渡しても、prompt/raw本文をログへ残さない。"""
+
+    caplog.set_level(logging.INFO, logger="planner.graph")
+    await _invoke_graph_with_output_state(
+        '{"plan":["話者に合流する"],"resp":"AlexSecret private relay","intent":"move_to_player"}',
+        user_msg="tell Alex to come here",
+    )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert all("tell Alex to come here" not in message for message in messages)
+    assert all("Alex" not in message for message in messages)
+    assert all("AlexSecret" not in message for message in messages)
+    assert any("LLM prompt prepared chars=" in message for message in messages)
+    assert any("LLM output received chars=" in message for message in messages)
 
 
 async def _invoke_graph_with_output(
