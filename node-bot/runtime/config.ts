@@ -38,7 +38,7 @@ const defaultDependencies: ConfigDependencies = {
 };
 
 // Mineflayer と Paper サーバーの互換性を保つための既定バージョン。
-const DEFAULT_MC_VERSION = '1.21.1';
+const DEFAULT_MC_VERSION = '1.21.11';
 const SUPPORTED_MINECRAFT_VERSIONS = new Set(
   minecraftData.versions.pc.map((version) => version.minecraftVersion),
 );

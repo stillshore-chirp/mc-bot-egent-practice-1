@@ -10,15 +10,21 @@ import {
 
 describe('resolveMinecraftVersionLabel', () => {
   it('サポートされているバージョンは警告なしで採用する', () => {
-    const result = resolveMinecraftVersionLabel('1.21.1');
-    expect(result.version).toBe('1.21.1');
+    const result = resolveMinecraftVersionLabel('1.21.11');
+    expect(result.version).toBe('1.21.11');
     expect(result.warnings).toHaveLength(0);
   });
 
   it('未知のバージョンは既定値へフォールバックし警告を出す', () => {
     const result = resolveMinecraftVersionLabel('9.9.9');
-    expect(result.version).toBe('1.21.1');
+    expect(result.version).toBe('1.21.11');
     expect(result.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('未設定時はサーバーと同じ1.21.11を既定値にする', () => {
+    const result = resolveMinecraftVersionLabel(undefined);
+    expect(result.version).toBe('1.21.11');
+    expect(result.warnings).toHaveLength(1);
   });
 });
 
@@ -30,7 +36,7 @@ describe('loadBotRuntimeConfig', () => {
   it('Docker 環境では localhost を host.docker.internal へ置き換える', () => {
     const env = {
       MC_HOST: 'localhost',
-      MC_VERSION: '1.21.1',
+      MC_VERSION: '1.21.11',
       WS_HOST: '0.0.0.0',
       MOVE_GOAL_TOLERANCE: '45',
     } as NodeJS.ProcessEnv;
@@ -51,6 +57,7 @@ describe('loadBotRuntimeConfig', () => {
     const { config, warnings } = loadBotRuntimeConfig({}, fakeDeps);
 
     expect(config.minecraft.port).toBe(25565);
+    expect(config.minecraft.version).toBe('1.21.11');
     expect(config.minecraft.username).toBe('HelperBot');
     expect(config.agentBridge.url).toBe('ws://python-agent:9000');
     expect(config.control.mode).toBe('command');
