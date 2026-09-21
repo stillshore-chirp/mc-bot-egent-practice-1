@@ -12,7 +12,7 @@ Issue: #191 / Branch: codex/safe-wood-collection / Base: bedbc99
 - [x] P0: サーバー側の自然成長証跡、設置・世界変化での失効、破壊時の再確認、unknownの拒否。
 - [x] P0: 拠点・チェスト登録、探索/伐採/回収/帰還/収納、期限・停止・部分成功、所持品保持。
 - [x] P1: チャット操作と固定診断、利用手順、契約・異常系テスト。
-- [ ] P1: local test/build、PR、latest HEAD CI、review。
+- [x] P1: local test/build、PR公開。latest HEAD CIとreviewの証跡はPR #194を正本とし、最終報告時に照合する。
 - [ ] 実ワールドの確認は別途承認後。未実施を成功と扱わない。
 
 ## 検証・再開
@@ -24,7 +24,9 @@ Issue: #191 / Branch: codex/safe-wood-collection / Base: bedbc99
 未知の既存木は許可しない。ブロック観測は画像視覚とは区別する。自然由来でも建築利用の疑い・保護判定不能なら拒否する。初期は保守的な樹形・有限範囲に限定する。機能の利用は明示チャットと管理者設定を必要とし、無効化で新規収集を止める。
 
 ## 状態
-実装・local検証済み。Node buildと26 files/252 tests（source/生成JSを含む）、Bridge 25 testsとshadowJarが成功。diff checkと公開安全性の差分確認済み。Python変更なしのためlocal Python全testは対象外。稼働中worktreeは触らず、独立worktreeで検証した。PR・CI・reviewへ進む。実ワールドの成長/伐採/拾得/収納・表示は未確認。
+実装・local検証済み。Node buildと26 files/264 tests（source/生成JSを含む）、Bridge 25 testsとshadowJarが成功。diff checkと公開安全性の差分確認済み。Python変更なしのためlocal Python全testは対象外。稼働中worktreeは触らず、独立worktreeで検証した。PR #194の初回HEADはCI全3件成功、review/thread/comment未投稿。通常採掘による木材判定の迂回拒否を追加し、関連検証を再実行する。
+
+最終状態: Blocked（実ワールド受入）。成長/伐採/拾得/収納・表示は未確認。再開条件はPaper/Nodeの反映・再起動、担当者設定、専用試験木と収納先を使う実操作の承認。現行world・稼働サービスは変更していない。次の最短アクションは利用者と試験対象を確認して承認範囲で反映すること。
 
 ## UI/UX反証と検証範囲
 対象はMinecraftチャットのコマンド・状態通知。新しい画面layoutはない。初見導線は未登録通知→base登録→collect。反復時は登録を保存しcollectだけで開始できる。status/stop/returnを明示し、成功と部分収納・未到達を分離する。

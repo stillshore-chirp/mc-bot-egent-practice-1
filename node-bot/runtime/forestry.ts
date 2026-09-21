@@ -87,6 +87,7 @@ const messages: Record<string,string> = {
   state_unavailable: '作業記録を読み書きできないため開始できません。記録ファイルを確認してください。',
   unhealthy: '体力・空腹に余裕がないため作業を止めました。回復後に !wood return で帰還・収納してください。',
   inventory_changed: '開始時より所持品が減っているため自動収納を止めました。死亡・紛失・手動移動の有無と所持品を確認してください。',
+  inventory_unsupported: '特殊なデータ付きの木材等があるため自動処理を止めました。通常の収集物と分けてから再試行してください。',
   changed: '木や周囲の状態が変わったため伐採を止め、帰還します。',
 };
 export class WoodService {
@@ -170,7 +171,7 @@ export class WoodService {
       this.check(bot);
       const state=this.state!;
       if(collect) {
-        if(!ordinaryCargo(bot)) throw new Error('inventory_changed');
+        if(!ordinaryCargo(bot)) throw new Error('inventory_unsupported');
         if(bot.entity.position.distanceTo(new Vec3(state.home.x,state.home.y,state.home.z))>4) throw new Error('route_unavailable');
         // 出発前に開けることと空きを確認する。既存内容は移動しない。
         const destination=this.chest(bot);
@@ -260,7 +261,7 @@ export class WoodService {
     if(Date.now()>=deadline) throw new Error('route_unavailable');
     await this.go(bot,state.home,Math.min(25000,deadline-Date.now()));this.check(bot);
     const inventory=cargoCounts(bot);
-    if(!ordinaryCargo(bot)) throw new Error('inventory_changed');
+    if(!ordinaryCargo(bot)) throw new Error('inventory_unsupported');
     if(Object.entries(state.baseline).some(([name,count])=>(inventory[name]??0)<count)) throw new Error('inventory_changed');
     this.report(bot,'depositing');
     const b=this.chest(bot);if(b.position.distanceTo(bot.entity.position)>4) throw new Error('chest_unavailable');
